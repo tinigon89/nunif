@@ -1,8 +1,12 @@
+import sys
 import threading
 import torch
 import torch.nn.functional as F
 from collections import deque
 import time
+
+# Delay before reopening a capture session that ended on its own
+RESTART_INTERVAL = 0.5
 
 
 def resize_frame(frame, size):
@@ -48,6 +52,25 @@ class ScreenshotThreadWCCUDA(threading.Thread):
             # 1 origin
             monitor_index = self.monitor_index + 1
 
+        try:
+            while not self.stop_event.is_set():
+                try:
+                    self._capture_session(WindowsCapture, monitor_index)
+                except Exception as e:  # noqa: BLE001
+                    print(f"wc_cuda: capture error: {e!r}", file=sys.stderr)
+                if self.stop_event.is_set():
+                    break
+                # Windows Graphics Capture ends the session on its own when the display
+                # topology changes (e.g. a monitor is plugged in). Reopen it instead of
+                # letting the pipeline die with "thread is dead".
+                print("wc_cuda: capture session closed, reopening", file=sys.stderr)
+                time.sleep(RESTART_INTERVAL)
+        finally:
+            self.frame_set_event.set()
+            time.sleep(0.1)
+
+    def _capture_session(self, WindowsCapture, monitor_index):
+        """Runs one capture session; returns when the session ends."""
         capture = WindowsCapture(
             cursor_capture=None,
             draw_border=None,
@@ -99,12 +122,8 @@ class ScreenshotThreadWCCUDA(threading.Thread):
         def on_closed():
             pass
 
-        try:
-            # event loop
-            capture.start()
-        finally:
-            self.frame_set_event.set()
-            time.sleep(0.1)
+        # event loop, blocks until the session ends
+        capture.start()
 
     def get_frame(self):
         while not self.frame_set_event.wait(1):

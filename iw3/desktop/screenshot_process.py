@@ -14,6 +14,9 @@ import wx
 from typing import Any
 
 
+# Delay before reopening a capture session that ended on its own
+RESTART_INTERVAL = 0.5
+
 _x11_connection_pool: dict[int, Any] = {}
 _mss_pool: dict[int, Any] = {}
 
@@ -330,28 +333,31 @@ def capture_process(
     frame_buffer = np.ndarray(frame_size, dtype=np.uint8, buffer=frame_shm.buf)
     frame_count = 0
 
-    if backend == "mss":
-        capture = WindowsCaptureMSS(monitor_index=monitor_index, window_name=window_name)
-    elif backend == "windows_capture":
+    if backend == "windows_capture":
         try:
             from windows_capture import WindowsCapture
         except ImportError:
             frame_event.set()
             raise
 
-        if window_name:
-            # ignore
-            monitor_index = None
-        else:
-            # 1 origin
-            monitor_index = monitor_index + 1
+    def make_capture():
+        if backend == "mss":
+            return WindowsCaptureMSS(monitor_index=monitor_index, window_name=window_name)
+        elif backend == "windows_capture":
+            if window_name:
+                # ignore
+                wc_monitor_index = None
+            else:
+                # 1 origin
+                wc_monitor_index = monitor_index + 1
+            return WindowsCapture(
+                cursor_capture=None,
+                draw_border=None,
+                monitor_index=wc_monitor_index,
+                window_name=window_name,
+            )
 
-        capture = WindowsCapture(
-            cursor_capture=None,
-            draw_border=None,
-            monitor_index=monitor_index,
-            window_name=window_name,
-        )
+    capture = make_capture()
 
     @capture.event
     def on_frame_arrived(frame, capture_control):
@@ -401,8 +407,21 @@ def capture_process(
         pass
 
     try:
-        # event loop
-        capture.start()
+        while True:
+            try:
+                # event loop, blocks until the session ends
+                capture.start()
+            except Exception as e:  # noqa: BLE001
+                print(f"screenshot({backend}): capture error: {e!r}", file=sys.stderr)
+            if stop_event.is_set():
+                break
+            # The session ends on its own when the display topology changes (e.g. a monitor is
+            # plugged in). Reopen it instead of letting the pipeline die.
+            print(f"screenshot({backend}): capture session closed, reopening", file=sys.stderr)
+            time.sleep(RESTART_INTERVAL)
+            capture = make_capture()
+            capture.event(on_frame_arrived)
+            capture.event(on_closed)
     finally:
         frame_event.set()
         time.sleep(0.1)

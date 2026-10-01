@@ -1120,7 +1120,18 @@ class MainFrame(wx.Frame):
             fps_event=FPSGUI(self),
             stop_event=self.stop_event,
             depth_model=self.depth_model)
+        # Local Viewer `[` / `]` keys change divergence while running; keep the GUI controls in sync
+        args.state["on_divergence_changed"] = self.on_divergence_changed
         return args
+
+    def on_divergence_changed(self, value):
+        wx.CallAfter(self.sync_divergence_controls, value)
+
+    def sync_divergence_controls(self, value):
+        if self.args is None:
+            return
+        self.sld_adj_divergence.SetValue(value)
+        self.cbo_divergence.SetValue(str(value))
 
     def on_fps(self, event):
         estimated_fps, screenshot_fps, streaming_fps, screen_size, url = event.GetValue()

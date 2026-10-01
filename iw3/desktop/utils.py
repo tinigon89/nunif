@@ -183,6 +183,27 @@ def set_state_args(args, args_lock=None, stop_event=None, fps_event=None, depth_
         args.edge_dilation = 2
 
 
+DIVERGENCE_MIN = 0.0
+DIVERGENCE_MAX = 10.0
+
+
+def adjust_divergence(args, delta):
+    """Change args.divergence by delta while the pipeline is running.
+
+    The value is rounded to one decimal and clamped to [DIVERGENCE_MIN, DIVERGENCE_MAX].
+    If args.state["on_divergence_changed"] is set, it is called with the new value
+    (used by the GUI to sync its controls). Returns the new value.
+    """
+    with args.state["args_lock"]:
+        value = round(args.divergence + delta, 1)
+        value = min(max(value, DIVERGENCE_MIN), DIVERGENCE_MAX)
+        args.divergence = value
+    hook = args.state.get("on_divergence_changed")
+    if hook is not None:
+        hook(value)
+    return value
+
+
 def test_output_size(size, args, depth_model, side_model):
     frame = torch.zeros((3, *size), dtype=torch.float32).to(args.state["device"])
     sbs = IW3U.process_image(frame, args, depth_model, side_model, autocrop_uncrop=True)
@@ -339,8 +360,18 @@ def iw3_desktop_main(args, init_wxapp=True):
             raise RuntimeError("Local Viewer is not available")
         IS_ROCM = getattr(torch.version, "hip", None) is not None
         USE_CUDA = torch.cuda.is_available() and not IS_ROCM
+
+        def on_adjust_divergence(delta):
+            # Called from the viewer window ([ / ] keys) on the wx main thread
+            value = adjust_divergence(args, delta)
+            if args.state["fps_event"] is None:
+                # CLI: the status line uses "\r", so start a fresh line
+                print(f"\n3D Strength = {value:.1f}")
+            return value
+
         server = LocalViewer(lock=lock, width=output_frame_width, height=output_frame_height,
-                             use_cuda=USE_CUDA, uncap_fps=args.uncap_fps)
+                             use_cuda=USE_CUDA, uncap_fps=args.uncap_fps,
+                             on_adjust_divergence=on_adjust_divergence)
 
     screenshot_thread = screenshot_factory(
         fps=args.stream_fps,

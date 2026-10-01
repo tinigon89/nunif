@@ -349,15 +349,31 @@ class GLCanvas(glcanvas.GLCanvas):
         return fps
 
 
+WINDOW_TITLE = "iw3-desktop: Local Viewer"
+DIVERGENCE_STEP = 0.1
+
+
+def divergence_delta_for_key(ch):
+    """Map a typed character to a 3D Strength (divergence) change. `]` up, `[` down, else None."""
+    if ch == "]":
+        return DIVERGENCE_STEP
+    if ch == "[":
+        return -DIVERGENCE_STEP
+    return None
+
+
 class LocalViewerWindow(wx.Frame):
     def __init__(self, width, height, size=(960, 540),
                  use_cuda=False, device_id=0,
-                 uncap_fps=False, polling_interval=POLLING_INTERVAL):
-        super().__init__(None, title="iw3-desktop: Local Viewer",
+                 uncap_fps=False, polling_interval=POLLING_INTERVAL,
+                 on_adjust_divergence=None):
+        super().__init__(None, title=WINDOW_TITLE,
                          size=size, style=wx.DEFAULT_FRAME_STYLE | wx.CLIP_CHILDREN)
         self.canvas = GLCanvas(self, width=width, height=height,
                                use_cuda=use_cuda, device_id=device_id,
                                uncap_fps=uncap_fps, polling_interval=polling_interval)
+        # callable(delta) -> new divergence value, or None when adjustment is not supported
+        self.on_adjust_divergence = on_adjust_divergence
 
         self.Bind(wx.EVT_CLOSE, self.on_close)
         self.Bind(wx.EVT_CHAR_HOOK, self.on_char)
@@ -369,12 +385,25 @@ class LocalViewerWindow(wx.Frame):
     def escape_fullscreen(self):
         self.ShowFullScreen(False, style=wx.FULLSCREEN_ALL)
 
+    def adjust_divergence(self, delta):
+        if self.on_adjust_divergence is None:
+            return False
+        value = self.on_adjust_divergence(delta)
+        if value is not None:
+            self.SetTitle(f"{WINDOW_TITLE} | 3D Strength {value:.1f}")
+        return True
+
     def on_char(self, evt):
         code = evt.GetKeyCode()
+        unicode_key = evt.GetUnicodeKey()
+        ch = chr(unicode_key) if unicode_key else ""
+        delta = divergence_delta_for_key(ch)
         if code == wx.WXK_ESCAPE and self.IsFullScreen():
             self.toggle_fullscreen()
         elif code == wx.WXK_F11:
             self.toggle_fullscreen()
+        elif delta is not None and self.adjust_divergence(delta):
+            pass
         else:
             evt.Skip()
 
@@ -397,6 +426,7 @@ class LocalViewer():
     def __init__(self, lock, width, height,
                  use_cuda=False, device_id=0,
                  uncap_fps=False, polling_interval=POLLING_INTERVAL,
+                 on_adjust_divergence=None,
                  **_unsupported_kwargs):
         self.width = width
         self.height = height
@@ -409,6 +439,7 @@ class LocalViewer():
         self.device_id = device_id
         self.uncap_fps = uncap_fps
         self.polling_interval = polling_interval
+        self.on_adjust_divergence = on_adjust_divergence
 
     def stop(self):
         with self.op_lock:
@@ -423,7 +454,8 @@ class LocalViewer():
             if self.window is None:
                 self.window = LocalViewerWindow(width=self.width, height=self.height,
                                                 use_cuda=self.use_cuda, device_id=self.device_id,
-                                                uncap_fps=self.uncap_fps, polling_interval=self.polling_interval)
+                                                uncap_fps=self.uncap_fps, polling_interval=self.polling_interval,
+                                                on_adjust_divergence=self.on_adjust_divergence)
                 self.window.Show()
                 self.initialized = True
 

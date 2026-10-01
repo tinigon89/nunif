@@ -369,9 +369,22 @@ def iw3_desktop_main(args, init_wxapp=True):
                 print(f"\n3D Strength = {value:.1f}")
             return value
 
+        mouse_forwarder = None
+        if sys.platform == "win32" and not args.window_name:
+            # Forward clicks in the viewer to the captured monitor (toggle with the C key).
+            # Window capture is excluded because the window can move after startup.
+            from .click_through import MouseForwarder, Win32MouseBackend, get_monitor_rect, layout_from_args
+            mouse_forwarder = MouseForwarder(
+                monitor_rect=get_monitor_rect(args.monitor_index),
+                layout=layout_from_args(args),
+                image_size=(output_frame_width, output_frame_height),
+                source_aspect=frame_width / frame_height,
+                backend=Win32MouseBackend())
+
         server = LocalViewer(lock=lock, width=output_frame_width, height=output_frame_height,
                              use_cuda=USE_CUDA, uncap_fps=args.uncap_fps,
-                             on_adjust_divergence=on_adjust_divergence)
+                             on_adjust_divergence=on_adjust_divergence,
+                             mouse_forwarder=mouse_forwarder)
 
     screenshot_thread = screenshot_factory(
         fps=args.stream_fps,

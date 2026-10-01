@@ -108,7 +108,8 @@ class _CUDART:
 class GLCanvas(glcanvas.GLCanvas):
     def __init__(self, parent, width, height,
                  use_cuda=False, device_id=0,
-                 uncap_fps=False, polling_interval=POLLING_INTERVAL):
+                 uncap_fps=False, polling_interval=POLLING_INTERVAL,
+                 mouse_forwarder=None):
         attribs = [
             glcanvas.WX_GL_RGBA,
             glcanvas.WX_GL_DOUBLEBUFFER,
@@ -130,12 +131,30 @@ class GLCanvas(glcanvas.GLCanvas):
         self.polling_interval = polling_interval
         self.cuda_resource = None
         self._cudart = None
+        # click_through.MouseForwarder or None; forwards clicks to the captured screen
+        self.mouse_forwarder = mouse_forwarder
 
         if uncap_fps:
             self.Bind(wx.EVT_IDLE, self.on_idle)
         self.Bind(wx.EVT_PAINT, self.on_paint)
         self.Bind(wx.EVT_SIZE, self.on_resize)
         self.Bind(wx.EVT_ERASE_BACKGROUND, lambda e: None)
+        # Clicks are forwarded on button release so press+release reach the target as one click.
+        self.Bind(wx.EVT_LEFT_UP, lambda e: self.on_mouse_click(e, "left"))
+        self.Bind(wx.EVT_RIGHT_UP, lambda e: self.on_mouse_click(e, "right"))
+        self.Bind(wx.EVT_MOUSEWHEEL, self.on_mouse_wheel)
+
+    def on_mouse_click(self, evt, button):
+        if self.mouse_forwarder is not None:
+            x, y = evt.GetPosition()
+            self.mouse_forwarder.click(x, y, tuple(self.GetClientSize()), button)
+        evt.Skip()
+
+    def on_mouse_wheel(self, evt):
+        if self.mouse_forwarder is not None:
+            x, y = evt.GetPosition()
+            self.mouse_forwarder.wheel(x, y, tuple(self.GetClientSize()), evt.GetWheelRotation())
+        evt.Skip()
 
     def init_gl(self, evt=None):
         self.SetCurrent(self.context)
@@ -362,21 +381,35 @@ def divergence_delta_for_key(ch):
     return None
 
 
+CLICK_THROUGH_TOGGLE_KEY = "C"
+
+
 class LocalViewerWindow(wx.Frame):
     def __init__(self, width, height, size=(960, 540),
                  use_cuda=False, device_id=0,
                  uncap_fps=False, polling_interval=POLLING_INTERVAL,
-                 on_adjust_divergence=None):
+                 on_adjust_divergence=None, mouse_forwarder=None):
         super().__init__(None, title=WINDOW_TITLE,
                          size=size, style=wx.DEFAULT_FRAME_STYLE | wx.CLIP_CHILDREN)
+        self.mouse_forwarder = mouse_forwarder
+        if mouse_forwarder is not None and hasattr(mouse_forwarder.backend, "hwnd"):
+            # let the forwarder give keyboard focus back to this window after each click
+            mouse_forwarder.backend.hwnd = self.GetHandle()
         self.canvas = GLCanvas(self, width=width, height=height,
                                use_cuda=use_cuda, device_id=device_id,
-                               uncap_fps=uncap_fps, polling_interval=polling_interval)
+                               uncap_fps=uncap_fps, polling_interval=polling_interval,
+                               mouse_forwarder=mouse_forwarder)
         # callable(delta) -> new divergence value, or None when adjustment is not supported
         self.on_adjust_divergence = on_adjust_divergence
+        self.status = {}  # title segments, e.g. {"3D Strength": "1.2", "Click-through": "OFF"}
 
         self.Bind(wx.EVT_CLOSE, self.on_close)
         self.Bind(wx.EVT_CHAR_HOOK, self.on_char)
+
+    def set_status(self, key, value):
+        self.status[key] = value
+        parts = [WINDOW_TITLE] + [f"{k} {v}" for k, v in self.status.items()]
+        self.SetTitle(" | ".join(parts))
 
     def toggle_fullscreen(self):
         is_full = self.IsFullScreen()
@@ -390,7 +423,14 @@ class LocalViewerWindow(wx.Frame):
             return False
         value = self.on_adjust_divergence(delta)
         if value is not None:
-            self.SetTitle(f"{WINDOW_TITLE} | 3D Strength {value:.1f}")
+            self.set_status("3D Strength", f"{value:.1f}")
+        return True
+
+    def toggle_click_through(self):
+        if self.mouse_forwarder is None:
+            return False
+        self.mouse_forwarder.enabled = not self.mouse_forwarder.enabled
+        self.set_status("Click-through", "ON" if self.mouse_forwarder.enabled else "OFF")
         return True
 
     def on_char(self, evt):
@@ -403,6 +443,8 @@ class LocalViewerWindow(wx.Frame):
         elif code == wx.WXK_F11:
             self.toggle_fullscreen()
         elif delta is not None and self.adjust_divergence(delta):
+            pass
+        elif ch.upper() == CLICK_THROUGH_TOGGLE_KEY and self.toggle_click_through():
             pass
         else:
             evt.Skip()
@@ -426,7 +468,7 @@ class LocalViewer():
     def __init__(self, lock, width, height,
                  use_cuda=False, device_id=0,
                  uncap_fps=False, polling_interval=POLLING_INTERVAL,
-                 on_adjust_divergence=None,
+                 on_adjust_divergence=None, mouse_forwarder=None,
                  **_unsupported_kwargs):
         self.width = width
         self.height = height
@@ -440,6 +482,7 @@ class LocalViewer():
         self.uncap_fps = uncap_fps
         self.polling_interval = polling_interval
         self.on_adjust_divergence = on_adjust_divergence
+        self.mouse_forwarder = mouse_forwarder
 
     def stop(self):
         with self.op_lock:
@@ -455,7 +498,8 @@ class LocalViewer():
                 self.window = LocalViewerWindow(width=self.width, height=self.height,
                                                 use_cuda=self.use_cuda, device_id=self.device_id,
                                                 uncap_fps=self.uncap_fps, polling_interval=self.polling_interval,
-                                                on_adjust_divergence=self.on_adjust_divergence)
+                                                on_adjust_divergence=self.on_adjust_divergence,
+                                                mouse_forwarder=self.mouse_forwarder)
                 self.window.Show()
                 self.initialized = True
 

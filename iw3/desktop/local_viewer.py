@@ -109,7 +109,7 @@ class GLCanvas(glcanvas.GLCanvas):
     def __init__(self, parent, width, height,
                  use_cuda=False, device_id=0,
                  uncap_fps=False, polling_interval=POLLING_INTERVAL,
-                 mouse_forwarder=None):
+                 mouse_forwarder=None, stereo_layout="sbs"):
         attribs = [
             glcanvas.WX_GL_RGBA,
             glcanvas.WX_GL_DOUBLEBUFFER,
@@ -133,6 +133,13 @@ class GLCanvas(glcanvas.GLCanvas):
         self._cudart = None
         # click_through.MouseForwarder or None; forwards clicks to the captured screen
         self.mouse_forwarder = mouse_forwarder
+        # OSD state (see show_osd / draw_osd)
+        self.stereo_layout = stereo_layout
+        self.osd_tex_id = None
+        self.osd_size = (0, 0)
+        self.osd_pending = None   # text waiting to be uploaded as a texture
+        self.osd_until = 0.0      # perf_counter time when the OSD hides
+        self.osd_dirty = False    # redraw needed even without a new frame
 
         if uncap_fps:
             self.Bind(wx.EVT_IDLE, self.on_idle)
@@ -201,6 +208,9 @@ class GLCanvas(glcanvas.GLCanvas):
             GL.glBindTexture(GL.GL_TEXTURE_2D, 0)
             GL.glDeleteTextures([self.tex_id])
             self.tex_id = None
+        if self.osd_tex_id:
+            GL.glDeleteTextures([self.osd_tex_id])
+            self.osd_tex_id = None
         if self.pbo:
             GL.glBindBuffer(GL.GL_PIXEL_UNPACK_BUFFER, 0)
             GL.glDeleteBuffers(1, [self.pbo])
@@ -297,24 +307,76 @@ class GLCanvas(glcanvas.GLCanvas):
         x1 = x0 + draw_w
         y1 = y0 + draw_h
 
-        GL.glBegin(GL.GL_QUADS)
+        self._draw_textured_quad(x0, y0, x1, y1)
 
-        GL.glTexCoord2f(0, 0)
-        GL.glVertex2f(x0, y0)
-
-        GL.glTexCoord2f(1, 0)
-        GL.glVertex2f(x1, y0)
-
-        GL.glTexCoord2f(1, 1)
-        GL.glVertex2f(x1, y1)
-
-        GL.glTexCoord2f(0, 1)
-        GL.glVertex2f(x0, y1)
-
-        GL.glEnd()
+        self.draw_osd((x0, y0, draw_w, draw_h))
 
         GL.glBindTexture(GL.GL_TEXTURE_2D, 0)
         GL.glDisable(GL.GL_TEXTURE_2D)
+
+    @staticmethod
+    def _draw_textured_quad(x0, y0, x1, y1):
+        GL.glBegin(GL.GL_QUADS)
+        GL.glTexCoord2f(0, 0)
+        GL.glVertex2f(x0, y0)
+        GL.glTexCoord2f(1, 0)
+        GL.glVertex2f(x1, y0)
+        GL.glTexCoord2f(1, 1)
+        GL.glVertex2f(x1, y1)
+        GL.glTexCoord2f(0, 1)
+        GL.glVertex2f(x0, y1)
+        GL.glEnd()
+
+    def show_osd(self, text):
+        """Show `text` over the frame for OSD_DURATION seconds (main thread)."""
+        self.osd_pending = text
+        self.osd_until = time.perf_counter() + OSD_DURATION
+        self.osd_dirty = True
+        self.Refresh()
+        # make sure it disappears even if no new frame arrives
+        wx.CallLater(int(OSD_DURATION * 1000) + 50, self._on_osd_expire)
+
+    def _on_osd_expire(self):
+        if not self.closed and time.perf_counter() >= self.osd_until:
+            self.osd_dirty = True
+            self.Refresh()
+
+    def _upload_osd_texture(self, text):
+        rgba, w, h = render_osd_image(text)
+        if self.osd_tex_id is None:
+            self.osd_tex_id = GL.glGenTextures(1)
+            GL.glBindTexture(GL.GL_TEXTURE_2D, self.osd_tex_id)
+            GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MIN_FILTER, GL.GL_LINEAR)
+            GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MAG_FILTER, GL.GL_LINEAR)
+            GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_WRAP_S, GL.GL_CLAMP_TO_EDGE)
+            GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_WRAP_T, GL.GL_CLAMP_TO_EDGE)
+        else:
+            GL.glBindTexture(GL.GL_TEXTURE_2D, self.osd_tex_id)
+        GL.glPixelStorei(GL.GL_UNPACK_ALIGNMENT, 1)
+        GL.glTexImage2D(GL.GL_TEXTURE_2D, 0, GL.GL_RGBA8, w, h, 0, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE, rgba)
+        self.osd_size = (w, h)
+
+    def draw_osd(self, draw_rect):
+        """Draw the OSD text once per eye cell. Called from draw() with the GL context current."""
+        self.osd_dirty = False
+        if self.osd_pending is not None:
+            text, self.osd_pending = self.osd_pending, None
+            try:
+                self._upload_osd_texture(text)
+            except Exception as e:  # noqa: BLE001
+                print(f"OSD render failed: {e!r}", file=sys.stderr)
+                self.osd_until = 0.0
+        if self.osd_tex_id is None or time.perf_counter() >= self.osd_until:
+            return
+        w, h = self.osd_size
+        if w <= 0 or h <= 0:
+            return
+        GL.glEnable(GL.GL_BLEND)
+        GL.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA)
+        GL.glBindTexture(GL.GL_TEXTURE_2D, self.osd_tex_id)
+        for qx, qy, qw, qh in osd_quads(draw_rect, self.stereo_layout, w / h):
+            self._draw_textured_quad(qx, qy, qx + qw, qy + qh)
+        GL.glDisable(GL.GL_BLEND)
 
     def on_idle(self, evt):
         if self.closed:
@@ -335,10 +397,12 @@ class GLCanvas(glcanvas.GLCanvas):
 
     def render(self):
         self.SetCurrent(self.context)
-        if self.set_tex():
+        new_frame = self.set_tex()
+        # redraw the last frame when the OSD changed, even without a new frame
+        if new_frame or (self.osd_dirty and self.initialized and self.frame is None and self.tex_id):
             self.draw()
             self.SwapBuffers()
-            return True
+            return new_frame
         return False
 
     def on_resize(self, evt):
@@ -371,6 +435,74 @@ class GLCanvas(glcanvas.GLCanvas):
 WINDOW_TITLE = "iw3-desktop: Local Viewer"
 DIVERGENCE_STEP = 0.1
 
+# On-screen display (OSD): short status text drawn over the frame, once per eye
+OSD_DURATION = 3.0        # seconds
+OSD_REL_HEIGHT = 0.06     # box height relative to the eye cell height
+OSD_REL_TOP = 0.04        # top margin relative to the eye cell height
+OSD_MAX_REL_WIDTH = 0.9   # box width cap relative to the eye cell width
+OSD_FONT_PX = 40
+OSD_PADDING_PX = 14
+
+
+def osd_quads(draw_rect, layout, text_aspect):
+    """Where to draw the OSD box. draw_rect=(x0, y0, w, h) is the on-screen rect of the whole
+    frame; layout is "sbs" / "tb" / "mono" (see click_through); text_aspect = width / height
+    of the text image. Returns one (x, y, w, h) per eye cell at the same relative position, so
+    the text appears at zero disparity in a headset."""
+    x0, y0, w, h = draw_rect
+    if layout == "sbs":
+        cells = [(x0, y0, w / 2, h), (x0 + w / 2, y0, w / 2, h)]
+    elif layout == "tb":
+        cells = [(x0, y0, w, h / 2), (x0, y0 + h / 2, w, h / 2)]
+    else:
+        cells = [(x0, y0, w, h)]
+    quads = []
+    for cx, cy, cw, ch in cells:
+        qh = ch * OSD_REL_HEIGHT
+        qw = qh * text_aspect
+        if qw > cw * OSD_MAX_REL_WIDTH:
+            qw = cw * OSD_MAX_REL_WIDTH
+            qh = qw / text_aspect
+        qx = cx + (cw - qw) / 2
+        qy = cy + ch * OSD_REL_TOP
+        quads.append((qx, qy, qw, qh))
+    return quads
+
+
+def render_osd_image(text, font_px=OSD_FONT_PX, padding=OSD_PADDING_PX):
+    """Render `text` with wx into an RGBA byte buffer: white text on a translucent dark
+    rounded box. Returns (rgba_bytes, width, height). Must run on the wx main thread."""
+    import numpy as np
+
+    font = wx.Font(wx.FontInfo(wx.Size(0, font_px)).Bold())
+    measure = wx.MemoryDC(wx.Bitmap(1, 1))
+    measure.SetFont(font)
+    tw, th = measure.GetTextExtent(text)
+    measure.SelectObject(wx.NullBitmap)
+
+    w, h = int(tw + padding * 2), int(th + padding * 2)
+    bmp = wx.Bitmap(w, h, 32)
+    bmp.UseAlpha(True)
+    dc = wx.MemoryDC(bmp)
+    dc.SetBackground(wx.Brush(wx.Colour(0, 0, 0, 0)))
+    dc.Clear()
+    gc = wx.GraphicsContext.Create(dc)
+    gc.SetPen(wx.TRANSPARENT_PEN)
+    gc.SetBrush(wx.Brush(wx.Colour(0, 0, 0, 170)))
+    gc.DrawRoundedRectangle(0, 0, w, h, padding)
+    gc.SetFont(font, wx.Colour(255, 255, 255, 255))
+    gc.DrawText(text, padding, padding)
+    dc.SelectObject(wx.NullBitmap)
+
+    img = bmp.ConvertToImage()
+    rgb = np.frombuffer(bytes(img.GetData()), dtype=np.uint8).reshape(h, w, 3)
+    if img.HasAlpha():
+        alpha = np.frombuffer(bytes(img.GetAlpha()), dtype=np.uint8).reshape(h, w, 1)
+    else:
+        alpha = np.full((h, w, 1), 255, dtype=np.uint8)
+    rgba = np.concatenate([rgb, alpha], axis=2)
+    return rgba.tobytes(), w, h
+
 
 def divergence_delta_for_key(ch):
     """Map a typed character to a 3D Strength (divergence) change. `]` up, `[` down, else None."""
@@ -388,7 +520,7 @@ class LocalViewerWindow(wx.Frame):
     def __init__(self, width, height, size=(960, 540),
                  use_cuda=False, device_id=0,
                  uncap_fps=False, polling_interval=POLLING_INTERVAL,
-                 on_adjust_divergence=None, mouse_forwarder=None):
+                 on_adjust_divergence=None, mouse_forwarder=None, stereo_layout="sbs"):
         super().__init__(None, title=WINDOW_TITLE,
                          size=size, style=wx.DEFAULT_FRAME_STYLE | wx.CLIP_CHILDREN)
         self.mouse_forwarder = mouse_forwarder
@@ -398,7 +530,7 @@ class LocalViewerWindow(wx.Frame):
         self.canvas = GLCanvas(self, width=width, height=height,
                                use_cuda=use_cuda, device_id=device_id,
                                uncap_fps=uncap_fps, polling_interval=polling_interval,
-                               mouse_forwarder=mouse_forwarder)
+                               mouse_forwarder=mouse_forwarder, stereo_layout=stereo_layout)
         # callable(delta) -> new divergence value, or None when adjustment is not supported
         self.on_adjust_divergence = on_adjust_divergence
         self.status = {}  # title segments, e.g. {"3D Strength": "1.2", "Click-through": "OFF"}
@@ -410,6 +542,8 @@ class LocalViewerWindow(wx.Frame):
         self.status[key] = value
         parts = [WINDOW_TITLE] + [f"{k} {v}" for k, v in self.status.items()]
         self.SetTitle(" | ".join(parts))
+        if not self.canvas.closed:
+            self.canvas.show_osd(f"{key} {value}")
 
     def toggle_fullscreen(self):
         is_full = self.IsFullScreen()
@@ -468,7 +602,7 @@ class LocalViewer():
     def __init__(self, lock, width, height,
                  use_cuda=False, device_id=0,
                  uncap_fps=False, polling_interval=POLLING_INTERVAL,
-                 on_adjust_divergence=None, mouse_forwarder=None,
+                 on_adjust_divergence=None, mouse_forwarder=None, stereo_layout="sbs",
                  **_unsupported_kwargs):
         self.width = width
         self.height = height
@@ -483,6 +617,7 @@ class LocalViewer():
         self.polling_interval = polling_interval
         self.on_adjust_divergence = on_adjust_divergence
         self.mouse_forwarder = mouse_forwarder
+        self.stereo_layout = stereo_layout
 
     def stop(self):
         with self.op_lock:
@@ -499,7 +634,8 @@ class LocalViewer():
                                                 use_cuda=self.use_cuda, device_id=self.device_id,
                                                 uncap_fps=self.uncap_fps, polling_interval=self.polling_interval,
                                                 on_adjust_divergence=self.on_adjust_divergence,
-                                                mouse_forwarder=self.mouse_forwarder)
+                                                mouse_forwarder=self.mouse_forwarder,
+                                                stereo_layout=self.stereo_layout)
                 self.window.Show()
                 self.initialized = True
 

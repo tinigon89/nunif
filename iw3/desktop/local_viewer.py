@@ -515,6 +515,25 @@ def divergence_delta_for_key(ch):
 
 CLICK_THROUGH_TOGGLE_KEY = "C"
 
+# Global hotkeys (Windows RegisterHotKey): plain [ / ] work while the viewer is running,
+# whichever window has focus. They are taken away from other apps for that time.
+HOTKEY_DIVERGENCE_DOWN = 1
+HOTKEY_DIVERGENCE_UP = 2
+VK_OEM_4 = 0xDB  # "[" on a US layout
+VK_OEM_6 = 0xDD  # "]" on a US layout
+GLOBAL_HOTKEYS = {
+    HOTKEY_DIVERGENCE_DOWN: (0, VK_OEM_4),  # (modifiers, virtual key)
+    HOTKEY_DIVERGENCE_UP: (0, VK_OEM_6),
+}
+
+
+def divergence_delta_for_hotkey(hotkey_id):
+    if hotkey_id == HOTKEY_DIVERGENCE_UP:
+        return DIVERGENCE_STEP
+    if hotkey_id == HOTKEY_DIVERGENCE_DOWN:
+        return -DIVERGENCE_STEP
+    return None
+
 
 class LocalViewerWindow(wx.Frame):
     def __init__(self, width, height, size=(960, 540),
@@ -537,6 +556,32 @@ class LocalViewerWindow(wx.Frame):
 
         self.Bind(wx.EVT_CLOSE, self.on_close)
         self.Bind(wx.EVT_CHAR_HOOK, self.on_char)
+        self.registered_hotkeys = []
+        if self.on_adjust_divergence is not None:
+            self.register_global_hotkeys()
+
+    def register_global_hotkeys(self):
+        if sys.platform != "win32":
+            return
+        for hotkey_id, (modifiers, vk) in GLOBAL_HOTKEYS.items():
+            if self.RegisterHotKey(hotkey_id, modifiers, vk):
+                self.registered_hotkeys.append(hotkey_id)
+            else:
+                print(f"Local Viewer: could not register global hotkey id={hotkey_id} vk=0x{vk:02X}"
+                      " (already taken by another app); it only works while the viewer is focused",
+                      file=sys.stderr)
+        if self.registered_hotkeys:
+            self.Bind(wx.EVT_HOTKEY, self.on_hotkey)
+
+    def unregister_global_hotkeys(self):
+        for hotkey_id in self.registered_hotkeys:
+            self.UnregisterHotKey(hotkey_id)
+        self.registered_hotkeys = []
+
+    def on_hotkey(self, evt):
+        delta = divergence_delta_for_hotkey(evt.GetId())
+        if delta is None or not self.adjust_divergence(delta):
+            evt.Skip()
 
     def set_status(self, key, value):
         self.status[key] = value
@@ -591,6 +636,7 @@ class LocalViewerWindow(wx.Frame):
         return self.canvas.get_fps()
 
     def on_close(self, evt):
+        self.unregister_global_hotkeys()
         self.canvas.destroy()
         evt.Skip()
 

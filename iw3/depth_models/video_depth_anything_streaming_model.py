@@ -1,13 +1,16 @@
 import os
 from os import path
-import torch
-from torchvision.transforms import functional as TF
-from nunif.device import create_device, autocast, device_is_mps, device_is_xpu # noqa
-from nunif.models.utils import compile_model
-from .base_depth_model import BaseDepthModel, HUB_MODEL_DIR
-from .video_depth_anything_model import batch_preprocess, postprocess
-from .models import DepthAA
 
+import torch
+from PIL import Image
+from torchvision.transforms import functional as TF
+
+from nunif.device import autocast, create_device, device_is_mps, device_is_xpu  # noqa
+from nunif.models.utils import compile_function, compile_model
+
+from ..base_depth_model import HUB_MODEL_DIR, BaseDepthModel
+from ..models import DepthAA
+from .video_depth_anything_model import batch_preprocess, postprocess
 
 NAME_MAP = {
     "VDA_Stream_S": "vits",
@@ -55,59 +58,105 @@ class VideoDepthAnythingStreamingModel(BaseDepthModel):
         encoder = NAME_MAP[model_type]
         metric_depth = model_type in METRIC_DEPTH_TYPES
         if not os.getenv("IW3_DEBUG"):
-            model = torch.hub.load("nagadomi/Video-Depth-Anything_iw3:main",
-                                   "VideoDepthAnythingStreaming", encoder=encoder, metric_depth=metric_depth, device=device,
-                                   verbose=False, trust_repo=True)
+            model = torch.hub.load(
+                "nagadomi/Video-Depth-Anything_iw3:main",
+                "VideoDepthAnythingStreaming",
+                encoder=encoder,
+                metric_depth=metric_depth,
+                device=device,
+                verbose=False,
+                trust_repo=True,
+            )
         else:
             assert path.exists("../Video-Depth-Anything_iw3/hubconf.py")
-            model = torch.hub.load("../Video-Depth-Anything_iw3",
-                                   "VideoDepthAnythingStreaming", encoder=encoder, metric_depth=metric_depth, device=device,
-                                   source="local", verbose=False, trust_repo=True)
+            model = torch.hub.load(
+                "../Video-Depth-Anything_iw3",
+                "VideoDepthAnythingStreaming",
+                encoder=encoder,
+                metric_depth=metric_depth,
+                device=device,
+                source="local",
+                verbose=False,
+                trust_repo=True,
+            )
 
         model.prep_lower_bound = resolution or 392
         if model.prep_lower_bound % 14 != 0:
             # From GUI, 512 -> 518
-            model.prep_lower_bound += (14 - model.prep_lower_bound % 14)
+            model.prep_lower_bound += 14 - model.prep_lower_bound % 14
 
         return model
 
     def reset_state(self):
         self.model.reset_state()
 
-    def infer(self, x, enable_amp=True, edge_dilation=0, depth_aa=False, **kwargs):
-        if not torch.is_tensor(x):
-            x = TF.to_tensor(x).to(self.device)
+    def infer(
+        self,
+        x: torch.Tensor | Image.Image,
+        tta: bool = False,
+        low_vram: bool = False,
+        enable_amp: bool = True,
+        edge_dilation: int | tuple[int, int] = 0,
+        depth_aa: bool = False,
+        **kwargs,
+    ) -> torch.Tensor:
+        if isinstance(x, torch.Tensor):
+            x_tensor: torch.Tensor = x.to(self.device)
+        else:
+            x_tensor = TF.to_tensor(x).to(self.device)
 
-        depth_aa = self.depth_aa if depth_aa else None
+        depth_aa_module = self.depth_aa if depth_aa else None
 
         batch = False
-        if x.ndim == 3:
-            x = x.unsqueeze(0)
+        if x_tensor.ndim == 3:
+            x_tensor = x_tensor.unsqueeze(0)
         else:
             batch = True
 
-        x = batch_preprocess(x, self.model.prep_lower_bound,
-                             metric_depth=self.metric_depth,
-                             limit_resolution=self.limit_resolution)
+        x_frames = batch_preprocess(
+            x_tensor,
+            self.model.prep_lower_bound,
+            metric_depth=self.metric_depth,
+            limit_resolution=self.limit_resolution,
+        )
         outputs = []
-        for frame in x:
+        for frame in x_frames:
             outputs.append(self.model.infer_video_depth_one(frame, use_amp=enable_amp).to(torch.float32))
         depth = torch.stack(outputs)
         depth = depth.squeeze(1)  # (B, 1, H, W) -> (B, H, W) for compatibility of VDA
 
-        depth = postprocess(depth, edge_dilation=edge_dilation, depth_aa=depth_aa, metric_depth=self.metric_depth,
-                            force_disparity=self.force_disparity, enable_amp=enable_amp)
+        depth = postprocess(
+            depth,
+            edge_dilation=edge_dilation,
+            depth_aa=depth_aa_module,
+            metric_depth=self.metric_depth,
+            force_disparity=self.force_disparity,
+            enable_amp=enable_amp,
+        )
         if not batch:
             depth = depth.squeeze(0)
 
         return depth
 
+    order: int = 60
+
     @classmethod
     def get_name(cls):
         return "VideoDepthAnythingStreaming"
 
+    @classmethod
+    def has_auto_download(cls, model_type: str) -> bool:
+        return model_type in {"VDA_Stream_S", "VDA_Stream_Metric_S"}
+
+    @classmethod
+    def is_small(cls, model_type: str) -> bool:
+        return model_type in {"VDA_Stream_S", "VDA_Stream_Metric_S"}
+
     def is_image_supported(self):
         return False
+
+    def is_streaming(self):
+        return True
 
     @classmethod
     def has_checkpoint_file(cls, model_type):
@@ -116,6 +165,10 @@ class VideoDepthAnythingStreamingModel(BaseDepthModel):
     @classmethod
     def supported(cls, model_type):
         return model_type in MODEL_FILES
+
+    @classmethod
+    def get_model_types(cls) -> list[str]:
+        return list(MODEL_FILES.keys())
 
     @classmethod
     def get_model_path(cls, model_type):
@@ -131,28 +184,34 @@ class VideoDepthAnythingStreamingModel(BaseDepthModel):
         return False  # TODO
 
     @classmethod
+    def is_depth_aa_supported(cls, model_type: str) -> bool:
+        return model_type in AA_SUPPORT_MODELS
+
+    @classmethod
     def force_update(cls):
         BaseDepthModel.force_update_hub("nagadomi/Video-Depth-Anything_iw3:main", "VideoDepthAnythingStreaming")
 
     def compile(self):
         if self.model_backup is None:
-            self.model_backup = (self.model.head, self.model.pretrained)
+            self.model_backup = (self.model.head, self.model.pretrained.get_intermediate_layers)
             self.model.head = compile_model(self.model.head)
-            self.model.pretrained = compile_model(self.model.pretrained)
+            self.model.pretrained.get_intermediate_layers = compile_function(
+                self.model.pretrained.get_intermediate_layers, device=self.device
+            )
 
     def clear_compiled_model(self):
         if self.model_backup is not None:
-            self.model.head, self.model.pretrained = self.model_backup
+            self.model.head, self.model.pretrained.get_intermediate_layers = self.model_backup
             self.model_backup = None
 
 
 def _test():
-    from PIL import Image
     import torchvision.transforms.functional as TF
+    from PIL import Image
 
     model = VideoDepthAnythingStreamingModel("VDA_Stream_S")
     model.load(gpu=0)
-    im = Image.open("cc0/320/dog.png").convert("RGB")
+    im = Image.open("tests/images/dog_448.png").convert("RGB")
     x = TF.to_tensor(im).to(model.device)
     out = model.infer(x)
     print(out.shape)

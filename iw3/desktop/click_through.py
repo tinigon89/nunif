@@ -6,10 +6,11 @@ Coordinate pipeline:
 
 The pure functions have no wx/win32 dependency so they can be unit-tested anywhere.
 """
+
 import sys
 
-LAYOUT_SBS = "sbs"    # left/right halves (Full SBS, Half SBS, cross-eyed, RGBD)
-LAYOUT_TB = "tb"      # top/bottom halves
+LAYOUT_SBS = "sbs"  # left/right halves (Full SBS, Half SBS, cross-eyed, RGBD)
+LAYOUT_TB = "tb"  # top/bottom halves
 LAYOUT_MONO = "mono"  # single image (anaglyph)
 
 # Win32 MOUSEINPUT flags
@@ -165,8 +166,14 @@ if sys.platform == "win32":
     ULONG_PTR = ctypes.c_size_t
 
     class _MOUSEINPUT(ctypes.Structure):
-        _fields_ = [("dx", wintypes.LONG), ("dy", wintypes.LONG), ("mouseData", wintypes.DWORD),
-                    ("dwFlags", wintypes.DWORD), ("time", wintypes.DWORD), ("dwExtraInfo", ULONG_PTR)]
+        _fields_ = [
+            ("dx", wintypes.LONG),
+            ("dy", wintypes.LONG),
+            ("mouseData", wintypes.DWORD),
+            ("dwFlags", wintypes.DWORD),
+            ("time", wintypes.DWORD),
+            ("dwExtraInfo", ULONG_PTR),
+        ]
 
     class _INPUT(ctypes.Structure):
         _fields_ = [("type", wintypes.DWORD), ("mi", _MOUSEINPUT)]
@@ -194,9 +201,17 @@ if sys.platform == "win32":
             self.user32.SetCursorPos(int(x), int(y))
 
         def send(self, ax, ay, flags, wheel_delta=0):
-            inp = _INPUT(type=INPUT_MOUSE,
-                         mi=_MOUSEINPUT(dx=ax, dy=ay, mouseData=ctypes.c_uint32(wheel_delta & 0xFFFFFFFF).value,
-                                        dwFlags=flags, time=0, dwExtraInfo=0))
+            inp = _INPUT(
+                type=INPUT_MOUSE,
+                mi=_MOUSEINPUT(
+                    dx=ax,
+                    dy=ay,
+                    mouseData=ctypes.c_uint32(wheel_delta & 0xFFFFFFFF).value,
+                    dwFlags=flags,
+                    time=0,
+                    dwExtraInfo=0,
+                ),
+            )
             self.user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(_INPUT))
 
         def restore_foreground(self):
@@ -207,6 +222,7 @@ if sys.platform == "win32":
     def get_monitor_rect(monitor_index):
         """(left, top, width, height) of the monitor in the same order used by --monitor-index."""
         import win32api
+
         monitors = win32api.EnumDisplayMonitors()
         left, top, right, bottom = monitors[monitor_index][2]
         return (left, top, right - left, bottom - top)

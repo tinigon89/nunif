@@ -1,23 +1,28 @@
-# Find mask threshold
-# python -m iw3.cli -i ./images/ -o ./export_images --yes --depth-model Any_V2_B --export-disparity
-# python -m iw3.training.sbs.find_mask_threshold --rgb-dir ./export_images/rgb --depth-dir ./export_images/depth
-#
-# Visualize
-# python -m iw3.training.sbs.find_mask_threshold --rgb-dir ./export_images/rgb --depth-dir ./export_images/depth -o tmp/mask_vis --threshold 0.15
+"""
+Find mask threshold
+  python -m iw3.cli -i ./images/ -o ./export_images --yes --depth-model Any_V2_B --export-disparity
+  python -m iw3.training.sbs.find_mask_threshold --rgb-dir ./export_images/rgb --depth-dir ./export_images/depth
+
+Visualize
+  python -m iw3.training.sbs.find_mask_threshold --rgb-dir ./export_images/rgb \
+         --depth-dir ./export_images/depth -o tmp/mask_vis --threshold 0.15
+"""
 
 import argparse
 import os
 from os import path
+
 import torch
 import torchvision.transforms.functional as TF
+from tqdm import tqdm
+
 from iw3 import models  # noqa
-from iw3.stereo_model_factory import create_stereo_model
-from iw3.forward_warp import nonwarp_mask as forward_nonwarp_mask
 from iw3.backward_warp import nonwarp_mask as backward_nonwarp_mask
 from iw3.dilation import mask_closing
-from nunif.utils.pil_io import load_image_simple
+from iw3.forward_warp import nonwarp_mask as forward_nonwarp_mask
+from iw3.stereo_model_factory import create_stereo_model
 from nunif.utils.image_loader import ImageLoader
-from tqdm import tqdm
+from nunif.utils.pil_io import load_image_simple
 
 
 def iou(mask1, mask2):
@@ -42,14 +47,8 @@ def bench(args, model, divergence, threshold):
     if len(rgb_files) == 0:
         raise ValueError(f"{args.rgb_dir} is empty")
 
-    rgb_loader = ImageLoader(
-        files=rgb_files,
-        load_func=load_image_simple,
-        load_func_kwargs={"color": "rgb"})
-    depth_loader = ImageLoader(
-        files=depth_files,
-        load_func=load_image_simple,
-        load_func_kwargs={"color": "gray"})
+    rgb_loader = ImageLoader(files=rgb_files, load_func=load_image_simple, load_func_kwargs={"color": "rgb"})
+    depth_loader = ImageLoader(files=depth_files, load_func=load_image_simple, load_func_kwargs={"color": "gray"})
 
     iou_sum = 0
     for rgb, depth in tqdm(zip(rgb_loader, depth_loader)):
@@ -57,8 +56,9 @@ def bench(args, model, divergence, threshold):
         depth = TF.to_tensor(depth[0]).unsqueeze(0).cuda()
 
         _, forward_mask = forward_nonwarp_mask(rgb, depth, divergence=divergence, convergence=0.5)
-        _, backward_mask = backward_nonwarp_mask(model, rgb, depth, divergence=divergence, convergence=0.5, mapper="none",
-                                                 threshold=threshold, dilation=0)
+        _, backward_mask = backward_nonwarp_mask(
+            model, rgb, depth, divergence=divergence, convergence=0.5, mapper="none", threshold=threshold, dilation=0
+        )
 
         forward_mask = (forward_mask > 0.9).float()
         forward_mask = mask_closing(forward_mask)
@@ -66,7 +66,7 @@ def bench(args, model, divergence, threshold):
 
         iou_sum += iou(forward_mask, backward_mask)
 
-    print(f"IOU: {iou_sum/len(rgb_files)}")
+    print(f"IOU: {iou_sum / len(rgb_files)}")
 
 
 def visualize(args, model, divergence=2.0, threshold=0.4):
@@ -81,14 +81,8 @@ def visualize(args, model, divergence=2.0, threshold=0.4):
 
     os.makedirs(args.output_dir, exist_ok=True)
 
-    rgb_loader = ImageLoader(
-        files=rgb_files,
-        load_func=load_image_simple,
-        load_func_kwargs={"color": "rgb"})
-    depth_loader = ImageLoader(
-        files=depth_files,
-        load_func=load_image_simple,
-        load_func_kwargs={"color": "gray"})
+    rgb_loader = ImageLoader(files=rgb_files, load_func=load_image_simple, load_func_kwargs={"color": "rgb"})
+    depth_loader = ImageLoader(files=depth_files, load_func=load_image_simple, load_func_kwargs={"color": "gray"})
 
     i = 0
     for rgb, depth in tqdm(zip(rgb_loader, depth_loader)):
@@ -96,8 +90,9 @@ def visualize(args, model, divergence=2.0, threshold=0.4):
         depth = TF.to_tensor(depth[0]).unsqueeze(0).cuda()
 
         _, forward_mask = forward_nonwarp_mask(rgb, depth, divergence=divergence, convergence=0.5)
-        _, backward_mask = backward_nonwarp_mask(model, rgb, depth, divergence=divergence, convergence=0.5, mapper="none",
-                                                 threshold=threshold, dilation=0)
+        _, backward_mask = backward_nonwarp_mask(
+            model, rgb, depth, divergence=divergence, convergence=0.5, mapper="none", threshold=threshold, dilation=0
+        )
 
         forward_mask = (forward_mask > 0.9).float()
         forward_mask = mask_closing(forward_mask)

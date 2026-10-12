@@ -284,15 +284,13 @@ class Waifu2xDataset(Waifu2xDatasetBase):
             exclude_prefixes.append(SCREENTONE_PREFIX)
         if skip_dot:
             exclude_prefixes.append(DOT_PREFIX)
-        if exclude_prefixes:
-            exclude_filter = lambda fn: not any([prefix in fn for prefix in exclude_prefixes])
-        else:
-            exclude_filter = None
 
         super().__init__(
             input_dir,
             num_samples=num_samples,
-            exclude_filter=exclude_filter,
+            exclude_filter=lambda fn: (
+                not any([prefix in fn for prefix in exclude_prefixes]) if exclude_prefixes else None
+            ),
             additional_data_dir=additional_data_dir,
             additional_data_dir_p=additional_data_dir_p,
         )
@@ -304,8 +302,7 @@ class Waifu2xDataset(Waifu2xDatasetBase):
 
         if self.training:
             if noise_level >= 0:
-                random_crop_p = 0.3 if self.style == "photo" else 0.07
-                jpeg_transform = RandomJPEGNoiseX(style=style, noise_level=noise_level, random_crop_p=random_crop_p)
+                jpeg_transform = RandomJPEGNoiseX(style=style, noise_level=noise_level, random_crop_p=0.07)
             else:
                 jpeg_transform = TP.Identity()
 

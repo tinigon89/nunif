@@ -1,18 +1,30 @@
-import os
-import threading
-import torch
-from collections import deque
-import time
-from torchvision.transforms import (
-    functional as TF,
-    InterpolationMode)
 import multiprocessing as mp
-from multiprocessing import shared_memory
-import numpy as np
+import os
 import sys
-import wx
+import threading
+import time
+from collections import deque
+from multiprocessing import shared_memory
 from typing import Any
 
+import numpy as np
+import torch
+import wx
+from torchvision.transforms import InterpolationMode
+from torchvision.transforms import functional as TF
+
+from .screenshot_thread_kwcapture import (
+    enum_window_names as kwcapture_enum_window_names,
+)
+from .screenshot_thread_kwcapture import (
+    get_monitor_size_list as kwcapture_get_monitor_size_list,
+)
+from .screenshot_thread_kwcapture import (
+    get_window_rect_by_title as kwcapture_get_window_rect_by_title,
+)
+from .screenshot_thread_kwcapture import (  # noqa
+    is_kwcapture_supported,
+)
 
 # Delay before reopening a capture session that ended on its own
 RESTART_INTERVAL = 0.5
@@ -22,12 +34,11 @@ _mss_pool: dict[int, Any] = {}
 
 
 def is_linux_x11():
-    return (sys.platform == "linux" and
-            os.environ.get("XDG_SESSION_TYPE", "").lower() == "x11")
+    return sys.platform == "linux" and os.environ.get("XDG_SESSION_TYPE", "").lower() == "x11"
 
 
 def is_mss_supported():
-    if sys.platform  == "linux":
+    if sys.platform == "linux":
         return is_linux_x11()
     else:
         return True
@@ -38,6 +49,7 @@ def get_x11():
     display, root = _x11_connection_pool.get(key, (None, None))
     if display is None:
         from Xlib import display as Xdisplay
+
         display = Xdisplay.Display()
         root = display.screen().root
         _x11_connection_pool[key] = (display, root)
@@ -55,18 +67,19 @@ def get_mss():
     sct = _mss_pool.get(key)
     if sct is None:
         import mss
+
         sct = mss.mss(with_cursor=True)
         _mss_pool[key] = sct
 
     return sct
 
 
-class FrameMSS():
+class FrameMSS:
     def __init__(self, frame):
         self.frame_buffer = frame
 
 
-class CaptureControlMSS():
+class CaptureControlMSS:
     def __init__(self):
         self._stop = False
         self.frame_pos = [0, 0]
@@ -75,7 +88,7 @@ class CaptureControlMSS():
         self._stop = True
 
 
-class WindowsCaptureMSS():
+class WindowsCaptureMSS:
     def __init__(self, monitor_index=0, window_name=None):
         self.window_name = window_name
         self.monitor_index = monitor_index
@@ -90,6 +103,7 @@ class WindowsCaptureMSS():
 
     def start(self):
         import mss
+
         control = CaptureControlMSS()
         while True:
             with mss.mss(with_cursor=True) as sct:
@@ -116,15 +130,22 @@ def draw_cursor(x, pos, size=12, offset=[0, 0]):
     rr = r // 2
     pos_x = min(max(pos[0] - offset[1], r), W - r)
     pos_y = min(max(pos[1] - offset[0], r), H - r)
-    px = x[:, pos_y - rr: pos_y + rr, pos_x - rr: pos_x + rr].clone()
+    px = x[:, pos_y - rr : pos_y + rr, pos_x - rr : pos_x + rr].clone()
     color = torch.tensor((0x33 / 255.0, 0x80 / 255.0, 0x80 / 255.0), dtype=px.dtype, device=px.device).view(3, 1, 1)
-    x[:, pos_y - r: pos_y + r, pos_x - r: pos_x + r] = color
-    x[:, pos_y - rr: pos_y + rr, pos_x - rr: pos_x + rr] = px
+    x[:, pos_y - r : pos_y + r, pos_x - r : pos_x + r] = color
+    x[:, pos_y - rr : pos_y + rr, pos_x - rr : pos_x + rr] = px
 
 
 def get_monitor_size_list():
+    if is_kwcapture_supported():
+        # On Wayland, mss sees the XWayland screen only (or nothing at all). kwcapture asks
+        # KWin, so the sizes are the ones a capture will actually return (device pixels).
+        size_list = kwcapture_get_monitor_size_list()
+        if size_list:
+            return size_list
     if sys.platform == "win32":
         import win32api
+
         monitors = win32api.EnumDisplayMonitors()
         size_list = []
         for monitor in monitors:
@@ -146,15 +167,13 @@ def get_screen_size(monitor_index):
     return size_list[monitor_index]
 
 
-DENY_WINDOW_NAMES = {
-    "Microsoft Text Input Application",
-    "Program Manager"
-}
+DENY_WINDOW_NAMES = {"Microsoft Text Input Application", "Program Manager"}
 
 
 def enum_window_names_x11():
     import Xlib
     from Xlib import X, Xatom
+
     d, root = get_x11()
 
     NET_CLIENT_LIST = d.intern_atom("_NET_CLIENT_LIST")
@@ -196,8 +215,19 @@ def enum_window_names_x11():
             if geom.width < 128 or geom.height < 128:
                 continue
 
-            window_name = (str(name) + "|" + str(abs_pos.x) + "," + str(abs_pos.y) + "|" +
-                           str(geom.width) + "," + str(geom.height) + "|" + str(w.id))
+            window_name = (
+                str(name)
+                + "|"
+                + str(abs_pos.x)
+                + ","
+                + str(abs_pos.y)
+                + "|"
+                + str(geom.width)
+                + ","
+                + str(geom.height)
+                + "|"
+                + str(w.id)
+            )
             windows.append(window_name)
 
         except Xlib.error.XError:
@@ -220,6 +250,9 @@ def enum_window_names():
 
         win32gui.EnumWindows(callback, None)
         return sorted(window_names)
+    elif is_kwcapture_supported():
+        # KWin keeps the window list; X11's _NET_CLIENT_LIST does not exist here
+        return kwcapture_enum_window_names()
     elif is_linux_x11():
         return enum_window_names_x11()
     else:
@@ -228,6 +261,7 @@ def enum_window_names():
 
 def find_window_x11(address, x_display):
     import Xlib
+
     try:
         window = x_display.create_resource_object("window", int(address))
     except Xlib.error.XError:
@@ -249,14 +283,10 @@ def get_window_rect_by_title(title, sct=None):
         width = right - left
         height = bottom - top
 
-        return {
-            "left": left,
-            "top": top,
-            "width": width,
-            "height": height
-        }
+        return {"left": left, "top": top, "width": width, "height": height}
     elif is_linux_x11():
         import Xlib
+
         x_display, x_root = get_x11()
         comp = title.rsplit("|", 4)
         if len(comp) < 4:
@@ -274,10 +304,10 @@ def get_window_rect_by_title(title, sct=None):
         if ret is None:
             # Window not found falling back to initial window area
             ret = {}
-            pos = comp[-3].split(',')
+            pos = comp[-3].split(",")
             ret["left"] = int(pos[0])
             ret["top"] = int(pos[1])
-            size = comp[-2].split(',')
+            size = comp[-2].split(",")
             ret["width"] = int(size[0])
             ret["height"] = int(size[1])
 
@@ -306,6 +336,12 @@ def get_window_rect_by_title(title, sct=None):
             return dict(sct.monitors[1])
 
         return ret
+    elif is_kwcapture_supported():
+        # Device pixels, measured from a real frame: KWin's own geometry is in logical
+        # pixels, which under fractional scaling is not what the capture thread returns.
+        # None (window closed) is returned as-is, so the caller reports "not found"
+        # instead of streaming a zero-sized area.
+        return kwcapture_get_window_rect_by_title(title)
     else:
         # TODO: Not implemented
         return {"left": 0, "right": 0, "width": 0, "height": 0}
@@ -326,9 +362,19 @@ def estimate_fps(fps_counter):
 
 
 def capture_process(
-        frame_size, monitor_index, window_name,
-        frame_shm, frame_pos, frame_lock, frame_event, stop_event, backend="mss",
-        crop_top=0, crop_left=0, crop_right=0, crop_bottom=0
+    frame_size,
+    monitor_index,
+    window_name,
+    frame_shm,
+    frame_pos,
+    frame_lock,
+    frame_event,
+    stop_event,
+    backend="mss",
+    crop_top=0,
+    crop_left=0,
+    crop_right=0,
+    crop_bottom=0,
 ):
     frame_buffer = np.ndarray(frame_size, dtype=np.uint8, buffer=frame_shm.buf)
     frame_count = 0
@@ -361,9 +407,7 @@ def capture_process(
 
     @capture.event
     def on_frame_arrived(frame, capture_control):
-        nonlocal frame_shm, frame_event, frame_lock, stop_event, \
-                  frame_buffer, frame_pos, window_name, frame_count, \
-                  crop_top, crop_left, crop_right, crop_bottom  # noqa
+        nonlocal frame_shm, frame_event, frame_lock, stop_event, frame_buffer, frame_pos, window_name, frame_count, crop_top, crop_left, crop_right, crop_bottom  # noqa
         if not frame_event.is_set():
             with frame_lock:
                 source_frame = frame.frame_buffer
@@ -379,17 +423,20 @@ def capture_process(
                 if frame_buffer.shape != source_frame.shape:
                     if window_name is not None:
                         # NOTE: The size may differ due to resizing, Window effects, etc.
-                        # I wanted to use replication padding, but since the edges of the Windows screen are black, it's meaningless
+                        # I wanted to use replication padding,
+                        # but since the edges of the Windows screen are black, it's meaningless
                         min_h = min(frame_buffer.shape[0], source_frame.shape[0])
                         min_w = min(frame_buffer.shape[1], source_frame.shape[1])
                         if frame_count % 30 == 0:
                             frame_buffer[:] = 0.0
                         frame_buffer[0:min_h, 0:min_w, :] = source_frame[0:min_h, 0:min_w, :]
                         frame_count += 1
-                        if frame_count > 0xffff:
+                        if frame_count > 0xFFFF:
                             frame_count = 0
                     else:
-                        raise RuntimeError(f"Screen size missmatch. frame_buffer={frame_buffer.shape}, frame={source_frame.shape}")
+                        raise RuntimeError(
+                            f"Screen size missmatch. frame_buffer={frame_buffer.shape}, frame={source_frame.shape}"
+                        )
                 else:
                     frame_buffer[:] = source_frame
 
@@ -435,9 +482,21 @@ def to_tensor(bgra, device):
 
 
 class ScreenshotProcess(threading.Thread):
-    def __init__(self, fps, frame_width, frame_height, monitor_index, window_name, device, backend="mss",
-                 crop_top=0, crop_left=0, crop_right=0, crop_bottom=0,
-                 draw_cursor_enabled=True):
+    def __init__(
+        self,
+        fps,
+        frame_width,
+        frame_height,
+        monitor_index,
+        window_name,
+        device,
+        backend="mss",
+        crop_top=0,
+        crop_left=0,
+        crop_right=0,
+        crop_bottom=0,
+        draw_cursor_enabled=True,
+    ):
         super().__init__(daemon=True)
         self.backend = backend
         self.frame_width = frame_width
@@ -480,19 +539,22 @@ class ScreenshotProcess(threading.Thread):
         self.process_frame_lock = mp.Lock()
         self.process = mp.Process(
             target=capture_process,
-            args=(tuple(template.shape),
-                  self.monitor_index,
-                  self.window_name,
-                  self.process_frame_buffer,
-                  self.process_frame_pos,
-                  self.process_frame_lock,
-                  self.process_frame_event,
-                  self.process_stop_event,
-                  self.backend,
-                  self.crop_top,
-                  self.crop_left,
-                  self.crop_right,
-                  self.crop_bottom))
+            args=(
+                tuple(template.shape),
+                self.monitor_index,
+                self.window_name,
+                self.process_frame_buffer,
+                self.process_frame_pos,
+                self.process_frame_lock,
+                self.process_frame_event,
+                self.process_stop_event,
+                self.backend,
+                self.crop_top,
+                self.crop_left,
+                self.crop_right,
+                self.crop_bottom,
+            ),
+        )
         self.process.start()
 
     def run(self):
@@ -507,8 +569,9 @@ class ScreenshotProcess(threading.Thread):
                         raise RuntimeError("thread is already dead")
 
                 with self.process_frame_lock:
-                    frame = np.ndarray((self.screen_height, self.screen_width, 4),
-                                       dtype=np.uint8, buffer=self.process_frame_buffer.buf)
+                    frame = np.ndarray(
+                        (self.screen_height, self.screen_width, 4), dtype=np.uint8, buffer=self.process_frame_buffer.buf
+                    )
                     frame = frame.copy()
 
                 frame = torch.from_numpy(frame)
@@ -526,9 +589,12 @@ class ScreenshotProcess(threading.Thread):
                         if self.backend == "mss" and sys.platform != "linux" and self.draw_cursor_enabled:
                             draw_cursor(frame, wx.GetMousePosition(), offset=self.process_frame_pos)
                         if frame.shape[1:] != (self.frame_height, self.frame_width):
-                            frame = TF.resize(frame, size=(self.frame_height, self.frame_width),
-                                              interpolation=InterpolationMode.BILINEAR,
-                                              antialias=True)
+                            frame = TF.resize(
+                                frame,
+                                size=(self.frame_height, self.frame_width),
+                                interpolation=InterpolationMode.BILINEAR,
+                                antialias=True,
+                            )
                     frame.record_stream(self.cuda_stream)
                 else:
                     frame = frame_buffer.to(self.device)
@@ -536,9 +602,12 @@ class ScreenshotProcess(threading.Thread):
                     if self.backend == "mss" and sys.platform != "linux" and self.draw_cursor_enabled:
                         draw_cursor(frame, wx.GetMousePosition(), offset=self.process_frame_pos)
                     if frame.shape[1:] != (self.frame_height, self.frame_width):
-                        frame = TF.resize(frame, size=(self.frame_height, self.frame_width),
-                                          interpolation=InterpolationMode.BILINEAR,
-                                          antialias=True)
+                        frame = TF.resize(
+                            frame,
+                            size=(self.frame_height, self.frame_width),
+                            interpolation=InterpolationMode.BILINEAR,
+                            antialias=True,
+                        )
 
                 with self.frame_lock:
                     self.frame = frame

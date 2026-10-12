@@ -1,6 +1,6 @@
 import unittest
 
-from iw3.desktop.local_viewer import divergence_delta_for_key, DIVERGENCE_STEP
+from iw3.desktop.local_viewer import DIVERGENCE_STEP, divergence_delta_for_key
 
 
 class DivergenceKeyTest(unittest.TestCase):

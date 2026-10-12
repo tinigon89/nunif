@@ -2,10 +2,20 @@ import unittest
 from types import SimpleNamespace
 
 from iw3.desktop.click_through import (
-    view_to_image, image_to_source, source_to_monitor, to_absolute,
-    layout_from_args, MouseForwarder,
-    LAYOUT_SBS, LAYOUT_TB, LAYOUT_MONO,
-    MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL,
+    LAYOUT_MONO,
+    LAYOUT_SBS,
+    LAYOUT_TB,
+    MOUSEEVENTF_LEFTDOWN,
+    MOUSEEVENTF_LEFTUP,
+    MOUSEEVENTF_RIGHTDOWN,
+    MOUSEEVENTF_RIGHTUP,
+    MOUSEEVENTF_WHEEL,
+    MouseForwarder,
+    image_to_source,
+    layout_from_args,
+    source_to_monitor,
+    to_absolute,
+    view_to_image,
 )
 
 
@@ -75,8 +85,16 @@ class MonitorMappingTest(unittest.TestCase):
 
 class LayoutFromArgsTest(unittest.TestCase):
     def make(self, **flags):
-        base = dict(full_sbs=False, half_sbs=False, cross_eyed=False, rgbd=False, half_rgbd=False,
-                    tb=False, half_tb=False, anaglyph=None)
+        base = dict(
+            full_sbs=False,
+            half_sbs=False,
+            cross_eyed=False,
+            rgbd=False,
+            half_rgbd=False,
+            tb=False,
+            half_tb=False,
+            anaglyph=None,
+        )
         base.update(flags)
         return SimpleNamespace(**base)
 
@@ -115,8 +133,13 @@ class FakeBackend:
 class MouseForwarderTest(unittest.TestCase):
     def make(self):
         backend = FakeBackend()
-        fwd = MouseForwarder(monitor_rect=(0, 0, 3840, 2160), layout=LAYOUT_SBS,
-                             image_size=(3840, 1080), source_aspect=16 / 9, backend=backend)
+        fwd = MouseForwarder(
+            monitor_rect=(0, 0, 3840, 2160),
+            layout=LAYOUT_SBS,
+            image_size=(3840, 1080),
+            source_aspect=16 / 9,
+            backend=backend,
+        )
         return fwd, backend
 
     def test_left_click_center_of_left_eye_hits_monitor_center(self):

@@ -17,29 +17,29 @@ def reflection_pad2d_naive(x, padding: tuple[int, int, int, int], detach: bool =
     left, right, top, bottom = padding
 
     if left > 0 and right > 0:
-        pad_l = torch.flip(_detach_fn(x[:, :, :, 1:left + 1], detach), dims=[3])
-        pad_r = torch.flip(_detach_fn(x[:, :, :, -right - 1:-1], detach), dims=[3])
+        pad_l = torch.flip(_detach_fn(x[:, :, :, 1 : left + 1], detach), dims=[3])
+        pad_r = torch.flip(_detach_fn(x[:, :, :, -right - 1 : -1], detach), dims=[3])
         x = torch.cat((pad_l, x, pad_r), dim=3)
     else:
         if left > 0:
-            x = torch.cat((torch.flip(_detach_fn(x[:, :, :, 1:left + 1], detach), dims=[3]), x), dim=3)
+            x = torch.cat((torch.flip(_detach_fn(x[:, :, :, 1 : left + 1], detach), dims=[3]), x), dim=3)
         elif left < 0:
             x = x[:, :, :, -left:]
         if right > 0:
-            x = torch.cat((x, torch.flip(_detach_fn(x[:, :, :, -right - 1:-1], detach), dims=[3])), dim=3)
+            x = torch.cat((x, torch.flip(_detach_fn(x[:, :, :, -right - 1 : -1], detach), dims=[3])), dim=3)
         elif right < 0:
             x = x[:, :, :, :right]
     if top > 0 and bottom > 0:
-        pad_t = torch.flip(_detach_fn(x[:, :, 1:top + 1, :], detach), dims=[2])
-        pad_b = torch.flip(_detach_fn(x[:, :, -bottom - 1:-1, :], detach), dims=[2])
+        pad_t = torch.flip(_detach_fn(x[:, :, 1 : top + 1, :], detach), dims=[2])
+        pad_b = torch.flip(_detach_fn(x[:, :, -bottom - 1 : -1, :], detach), dims=[2])
         x = torch.cat((pad_t, x, pad_b), dim=2)
     else:
         if top > 0:
-            x = torch.cat((torch.flip(_detach_fn(x[:, :, 1:top + 1, :], detach), dims=[2]), x), dim=2)
+            x = torch.cat((torch.flip(_detach_fn(x[:, :, 1 : top + 1, :], detach), dims=[2]), x), dim=2)
         elif top < 0:
             x = x[:, :, -top:, :]
         if bottom > 0:
-            x = torch.cat((x, torch.flip(_detach_fn(x[:, :, -bottom - 1:-1, :], detach), dims=[2])), dim=2)
+            x = torch.cat((x, torch.flip(_detach_fn(x[:, :, -bottom - 1 : -1, :], detach), dims=[2])), dim=2)
         elif bottom < 0:
             x = x[:, :, :bottom, :]
 
@@ -50,7 +50,7 @@ def _loop_step(pad: int, base: int) -> tuple[int, int]:
     remain = 0
     if pad > (base - 1):
         remain = pad - (base - 1)
-        pad = (base - 1)
+        pad = base - 1
     return pad, remain
 
 
@@ -100,11 +100,12 @@ def _test():
 
 
 def _test_vis():
-    import torchvision.io as IO
-    import torchvision.transforms.functional as TF
     import time
 
-    x = IO.read_image("cc0/dog2.jpg") / 255.0
+    import torchvision.io as IO
+    import torchvision.transforms.functional as TF
+
+    x = IO.read_image("tests/images/dog_448.png") / 255.0
     x = x[:, :256, :256].unsqueeze(0)
 
     padding = [32] * 4
@@ -114,6 +115,7 @@ def _test_vis():
     TF.to_pil_image(my_pad(x)[0]).show()
     time.sleep(1)
     TF.to_pil_image(nn_pad(x)[0]).show()
+    time.sleep(1)
 
 
 def _test_grad():
@@ -137,19 +139,23 @@ def _test_grad():
 
 
 def _vis_loop():
+    import time
+
     import torchvision.io as IO
     import torchvision.transforms.functional as TF
 
-    x = IO.read_image("cc0/dog2.jpg") / 255.0
+    x = IO.read_image("tests/images/dog_448.png") / 255.0
     x = x[:, :256, :256].unsqueeze(0)
 
     x = reflection_pad2d_loop(x, (640, -10, 320, -10))
     TF.to_pil_image(x[0]).show()
+    time.sleep(1)
 
 
 def _vis_loop2():
-    import torchvision.transforms.functional as TF
     import time
+
+    import torchvision.transforms.functional as TF
 
     x = torch.zeros((1, 1, 4, 4))
     x[:, :, :, 0] = 1.0
@@ -166,10 +172,12 @@ def _vis_loop2():
 
     x = reflection_pad2d_loop(x, (10,) * 4)
     TF.to_pil_image(x[0]).show()
+    time.sleep(1)
 
 
 def _test_loop():
     import torch.nn.functional as F
+
     for i in range(20):
         padding = (i, i, i, i)
         x = torch.rand((4, 3, 8, 8)).cuda()

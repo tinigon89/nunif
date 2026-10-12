@@ -1,6 +1,6 @@
 import unittest
 
-from iw3.desktop.local_viewer import osd_quads, OSD_DURATION, OSD_REL_HEIGHT, OSD_REL_TOP
+from iw3.desktop.local_viewer import OSD_DURATION, OSD_REL_HEIGHT, OSD_REL_TOP, osd_quads
 
 
 class OsdQuadsTest(unittest.TestCase):

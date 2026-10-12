@@ -19,14 +19,14 @@ filelock
 
 # iw3
 timm
-av==17.1.0
+av==19.0.1
 simpleeval
 
 # iw3-player
 fastapi
 hypercorn
 pysubs2
-pyopenssl
+pyopenssl==25.3.0
 
 # depthpro da3
 pillow_heif

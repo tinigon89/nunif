@@ -1,9 +1,12 @@
-from PIL import Image, ImageDraw, ImageOps, ImageFilter
 import random
+
+from PIL import Image, ImageDraw, ImageFilter, ImageOps
 from torchvision import transforms as T
 from torchvision.transforms import (
-    functional as TF,
     InterpolationMode,
+)
+from torchvision.transforms import (
+    functional as TF,
 )
 
 
@@ -67,14 +70,12 @@ def cutmix(a, b=None, mask_min=0.2, mask_max=0.5, rotate_p=0.2, blur_p=0.1):
     if b.width != width or b.height != height:
         b = _random_crop(b, width, height)
     # composite
-    mask = generate_random_mask(width, height,
-                                mask_min=mask_min, mask_max=mask_max,
-                                rotate_p=rotate_p, blur_p=blur_p)
+    mask = generate_random_mask(width, height, mask_min=mask_min, mask_max=mask_max, rotate_p=rotate_p, blur_p=blur_p)
     out = Image.composite(b, a, mask)
     return out
 
 
-class CutMix():
+class CutMix:
     def __init__(self, mask_min=0.2, mask_max=0.5, rotate_p=0.2, blur_p=0.1):
         self.mask_min = mask_min
         self.mask_max = mask_max
@@ -85,22 +86,27 @@ class CutMix():
         return cutmix(a, b, mask_min=self.mask_min, mask_max=self.mask_max, rotate_p=self.rotate_p, blur_p=self.blur_p)
 
 
-if __name__ == "__main__":
+def _test():
     import time
-    a = Image.open("cc0/bottle.jpg")
-    b = Image.open("cc0/lighthouse.jpg")
 
-    if False:
-        for i in range(10):
+    a = Image.open("tests/images/bottle_448.png")
+    b = Image.open("tests/images/lighthouse_448.png")
+
+    if True:
+        for i in range(2):
             out = cutmix(a, b)
             out.show()
-            time.sleep(1)
+            time.sleep(2)
 
     if True:
         # transform = CutMix(blur_p=1)
         # transform = CutMix(rotate_p=1)
         transform = CutMix()
-        for i in range(10):
+        for i in range(2):
             out = transform(b)
             out.show()
-            time.sleep(1)
+            time.sleep(2)
+
+
+if __name__ == "__main__":
+    _test()

@@ -1,5 +1,6 @@
 """The wc_cuda capture session can end on its own (e.g. display topology change when a monitor is
 plugged in). The screenshot thread must reopen the capture instead of dying."""
+
 import sys
 import threading
 import time
@@ -26,6 +27,7 @@ class FakeControl:
 
 class FakeWindowsCapture:
     """Mimics wc_cuda.WindowsCapture.start(): blocks and calls on_frame_arrived until closed."""
+
     instances = []
     # behaviour per instance index: "close" = session ends immediately with no frames,
     # "error" = raises like wc_cuda does on a capture error, "ok" = delivers frames
@@ -72,8 +74,9 @@ class ScreenshotRestartTest(unittest.TestCase):
             sys.modules["wc_cuda"] = self._saved
 
     def make_thread(self):
-        return stc.ScreenshotThreadWCCUDA(fps=60, frame_width=16, frame_height=8, monitor_index=0,
-                                          window_name=None, device=torch.device("cpu"))
+        return stc.ScreenshotThreadWCCUDA(
+            fps=60, frame_width=16, frame_height=8, monitor_index=0, window_name=None, device=torch.device("cpu")
+        )
 
     def test_reopens_capture_after_session_closes(self):
         FakeWindowsCapture.plan = ["close", "ok"]

@@ -1,8 +1,13 @@
 import unittest
 
 from iw3.desktop.local_viewer import (
-    GLOBAL_HOTKEYS, HOTKEY_DIVERGENCE_DOWN, HOTKEY_DIVERGENCE_UP,
-    VK_OEM_4, VK_OEM_6, DIVERGENCE_STEP, divergence_delta_for_hotkey,
+    DIVERGENCE_STEP,
+    GLOBAL_HOTKEYS,
+    HOTKEY_DIVERGENCE_DOWN,
+    HOTKEY_DIVERGENCE_UP,
+    VK_OEM_4,
+    VK_OEM_6,
+    divergence_delta_for_hotkey,
 )
 
 

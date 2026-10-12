@@ -1,16 +1,40 @@
-import wx
-from wx import glcanvas
-from OpenGL import GL
-import torch
+import ctypes
+import os
+import sys
 import threading
 import time
-import sys
-import os
 from collections import deque
-import ctypes
 
+import torch
+import wx
+from OpenGL import GL
+from wx import glcanvas
 
 POLLING_INTERVAL = 1.0 / 240.0
+
+
+def gl_renderer_string():
+    """OpenGL vendor/renderer of the current context, for diagnostics (never raises)."""
+    try:
+        vendor = GL.glGetString(GL.GL_VENDOR)
+        renderer = GL.glGetString(GL.GL_RENDERER)
+    except Exception:  # noqa
+        return "unknown GL"
+
+    def s(v):
+        if isinstance(v, bytes):
+            v = v.decode(errors="replace")
+        return v or "?"
+
+    return f"{s(vendor)} {s(renderer)}"
+
+
+def cuda_device_name(device_id):
+    """Name of the CUDA device, for diagnostics (never raises)."""
+    try:
+        return torch.cuda.get_device_name(device_id)
+    except Exception:  # noqa
+        return "unknown device"
 
 
 class _CUDART:
@@ -51,65 +75,106 @@ class _CUDART:
 
         # API Definitions
         self.lib.cudaSetDevice.argtypes = [ctypes.c_int]
-        self.lib.cudaGraphicsGLRegisterBuffer.argtypes = [
-            ctypes.POINTER(ctypes.c_void_p), ctypes.c_uint, ctypes.c_uint
-        ]
+        self.lib.cudaGraphicsGLRegisterBuffer.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_uint, ctypes.c_uint]
         self.lib.cudaGraphicsUnregisterResource.argtypes = [ctypes.c_void_p]
-        self.lib.cudaGraphicsMapResources.argtypes = [
-            ctypes.c_int, ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p
-        ]
-        self.lib.cudaGraphicsUnmapResources.argtypes = [
-            ctypes.c_int, ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p
-        ]
+        self.lib.cudaGraphicsMapResources.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p]
+        self.lib.cudaGraphicsUnmapResources.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p]
         self.lib.cudaGraphicsResourceGetMappedPointer.argtypes = [
             ctypes.POINTER(ctypes.c_void_p),
             ctypes.POINTER(ctypes.c_size_t),
             ctypes.c_void_p,
         ]
-        self.lib.cudaMemcpy.argtypes = [
-            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int
-        ]
-        self.lib.cudaSetDevice(device_id)
+        self.lib.cudaMemcpy.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int]
+        self.lib.cudaGetLastError.argtypes = []
+        self.lib.cudaGetLastError.restype = ctypes.c_int
+        self.lib.cudaGetErrorString.argtypes = [ctypes.c_int]
+        self.lib.cudaGetErrorString.restype = ctypes.c_char_p
+
+        res = self.lib.cudaSetDevice(device_id)
+        if res != 0:
+            raise self.error(res, f"cudaSetDevice({device_id}) failed")
+
+    def clear_last_error(self):
+        """cudaGetLastError(): returns *and clears* the CUDA error pending on this thread.
+
+        A CUDA runtime call that fails leaves its error code pending on the calling thread, and
+        the code stays there until somebody calls cudaGetLastError(). torch does exactly that in
+        its kernel launch check, so a failure we have already caught and recovered from gets
+        reported again -- blamed on whatever the next torch CUDA op happens to be. This is not
+        theoretical: when the desktop GL context lives on another GPU (a Wayland compositor on
+        the iGPU, a PRIME laptop, EGL where CUDA expects GLX), cudaGraphicsGLRegisterBuffer fails
+        with 219/cudaErrorInvalidGraphicsContext, init_gl() correctly falls back to the CPU path,
+        and the next torch call then died with
+        `torch.AcceleratorError: CUDA error: invalid OpenGL or DirectX context` at a plain
+        permute()/contiguous(). Clear the error on every CUDA path we give up on.
+        """
+        try:
+            self.lib.cudaGetLastError()
+        except Exception:  # noqa
+            pass
+
+    def error(self, res, what):
+        """RuntimeError with the CUDA error text, with the pending error cleared along the way."""
+        try:
+            detail = self.lib.cudaGetErrorString(res).decode()
+        except Exception:  # noqa
+            detail = f"error {res}"
+        message = f"{what}: {detail} ({res})"
+        self.clear_last_error()
+        return RuntimeError(message)
 
     def register_buffer(self, pbo_id):
         resource = ctypes.c_void_p()
         # 1 = cudaGraphicsRegisterFlagsNone
         res = self.lib.cudaGraphicsGLRegisterBuffer(ctypes.byref(resource), pbo_id, 1)
         if res != 0:
-            raise RuntimeError(f"cudaGraphicsGLRegisterBuffer failed: {res}")
+            raise self.error(res, "cudaGraphicsGLRegisterBuffer failed")
         return resource
 
     def unregister_resource(self, resource):
-        self.lib.cudaGraphicsUnregisterResource(resource)
+        res = self.lib.cudaGraphicsUnregisterResource(resource)
+        if res != 0:
+            self.clear_last_error()
 
     def memcpy_d2d(self, dst_ptr, src_ptr, size):
         # 3 = cudaMemcpyDeviceToDevice
         res = self.lib.cudaMemcpy(dst_ptr, src_ptr, size, 3)
         if res != 0:
-            raise RuntimeError(f"cudaMemcpy failed: {res}")
+            raise self.error(res, "cudaMemcpy failed")
 
     def map_resource(self, resource):
         res = self.lib.cudaGraphicsMapResources(1, ctypes.byref(resource), None)
         if res != 0:
-            raise RuntimeError(f"cudaGraphicsMapResources failed: {res}")
+            raise self.error(res, "cudaGraphicsMapResources failed")
 
         ptr = ctypes.c_void_p()
         size = ctypes.c_size_t()
         res = self.lib.cudaGraphicsResourceGetMappedPointer(ctypes.byref(ptr), ctypes.byref(size), resource)
         if res != 0:
             self.lib.cudaGraphicsUnmapResources(1, ctypes.byref(resource), None)
-            raise RuntimeError(f"cudaGraphicsResourceGetMappedPointer failed: {res}")
+            raise self.error(res, "cudaGraphicsResourceGetMappedPointer failed")
         return ptr.value
 
     def unmap_resource(self, resource):
-        self.lib.cudaGraphicsUnmapResources(1, ctypes.byref(resource), None)
+        res = self.lib.cudaGraphicsUnmapResources(1, ctypes.byref(resource), None)
+        if res != 0:
+            # Nobody is going to inspect this one, so do not leave it pending for them
+            self.clear_last_error()
 
 
 class GLCanvas(glcanvas.GLCanvas):
-    def __init__(self, parent, width, height,
-                 use_cuda=False, device_id=0,
-                 uncap_fps=False, polling_interval=POLLING_INTERVAL,
-                 mouse_forwarder=None, stereo_layout="sbs"):
+    def __init__(
+        self,
+        parent,
+        width,
+        height,
+        use_cuda=False,
+        device_id=0,
+        uncap_fps=False,
+        polling_interval=POLLING_INTERVAL,
+        mouse_forwarder=None,
+        stereo_layout="sbs",
+    ):
         attribs = [
             glcanvas.WX_GL_RGBA,
             glcanvas.WX_GL_DOUBLEBUFFER,
@@ -137,9 +202,9 @@ class GLCanvas(glcanvas.GLCanvas):
         self.stereo_layout = stereo_layout
         self.osd_tex_id = None
         self.osd_size = (0, 0)
-        self.osd_pending = None   # text waiting to be uploaded as a texture
-        self.osd_until = 0.0      # perf_counter time when the OSD hides
-        self.osd_dirty = False    # redraw needed even without a new frame
+        self.osd_pending = None  # text waiting to be uploaded as a texture
+        self.osd_until = 0.0  # perf_counter time when the OSD hides
+        self.osd_dirty = False  # redraw needed even without a new frame
 
         if uncap_fps:
             self.Bind(wx.EVT_IDLE, self.on_idle)
@@ -175,8 +240,9 @@ class GLCanvas(glcanvas.GLCanvas):
         GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MAG_FILTER, GL.GL_LINEAR)
         GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_WRAP_S, GL.GL_CLAMP_TO_EDGE)
         GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_WRAP_T, GL.GL_CLAMP_TO_EDGE)
-        GL.glTexImage2D(GL.GL_TEXTURE_2D, 0, GL.GL_RGB8, self.tex_w, self.tex_h, 0,
-                        GL.GL_RGB, GL.GL_UNSIGNED_BYTE, None)
+        GL.glTexImage2D(
+            GL.GL_TEXTURE_2D, 0, GL.GL_RGB8, self.tex_w, self.tex_h, 0, GL.GL_RGB, GL.GL_UNSIGNED_BYTE, None
+        )
         GL.glBindTexture(GL.GL_TEXTURE_2D, 0)
 
         self.pbo = GL.glGenBuffers(1)
@@ -189,8 +255,17 @@ class GLCanvas(glcanvas.GLCanvas):
                 self._cudart = _CUDART(self.device_id)
                 self.cuda_resource = self._cudart.register_buffer(self.pbo)
             except Exception as e:
-                print(f"Failed to initialize CUDA-GL Interop: {e}", file=sys.stderr)
-                self.use_cuda = False
+                # Interop is not available on this display: CUDA can only share buffers with a GL
+                # context on its own device, so anything that renders the desktop somewhere else
+                # (a Wayland compositor on the iGPU, a PRIME laptop, EGL instead of GLX) ends up
+                # here. The CPU transfer path in set_tex() is the supported fallback.
+                print(
+                    f"Failed to initialize CUDA-GL Interop: {e}"
+                    f" [{gl_renderer_string()} / CUDA {cuda_device_name(self.device_id)}]."
+                    " Falling back to the CPU transfer path.",
+                    file=sys.stderr,
+                )
+                self.disable_cuda()
 
         self.initialized = True
 
@@ -229,14 +304,72 @@ class GLCanvas(glcanvas.GLCanvas):
             return
 
         assert (
-            frame.ndim == 3 and
-            frame.shape[0] == 3 and
-            frame.shape[1] == self.tex_h and
-            frame.shape[2] == self.tex_w and
-            frame.dtype == torch.float32
+            frame.ndim == 3
+            and frame.shape[0] == 3
+            and frame.shape[1] == self.tex_h
+            and frame.shape[2] == self.tex_w
+            and frame.dtype == torch.float32
         )
         self.frame = frame
         self.Refresh()
+
+    def disable_cuda(self):
+        """Stop using CUDA-GL Interop, and leave no CUDA error pending for the next caller.
+
+        Losing interop is not fatal: it only costs the zero-copy upload. It must not throw out of
+        EVT_PAINT either, because the exception would then repeat on every repaint.
+        """
+        self.use_cuda = False
+        if self.cuda_resource is not None and self._cudart is not None:
+            try:
+                self._cudart.unregister_resource(self.cuda_resource)
+            except Exception:  # noqa
+                pass
+        self.cuda_resource = None
+        if self._cudart is not None:
+            self._cudart.clear_last_error()
+
+    @staticmethod
+    def to_rgb_uint8(frame):
+        # CHW float [0, 1] -> HWC uint8, the layout the PBO and the texture upload want
+        frame = frame.permute(1, 2, 0).contiguous()
+        return (frame.clamp(0, 1) * 255).to(torch.uint8)
+
+    def upload_interop(self, frame):
+        """Copy the frame into the PBO with cudaMemcpy through the interop resource.
+
+        Returns False (and disables interop) only when *interop* is the problem; a torch error
+        here is a real error and keeps propagating, as it did before.
+        """
+        # Ensure the frame is on the same device as the OpenGL PBO
+        if frame.get_device() != self.device_id:
+            frame = frame.to(f"cuda:{self.device_id}")
+        # Convert to uint8 on GPU
+        frame = self.to_rgb_uint8(frame)
+        try:
+            # Map PBO to CUDA and copy
+            ptr = self._cudart.map_resource(self.cuda_resource)
+            try:
+                self._cudart.memcpy_d2d(ptr, frame.data_ptr(), frame.nbytes)
+            finally:
+                self._cudart.unmap_resource(self.cuda_resource)
+        except Exception as e:  # noqa
+            print(
+                f"Failed to copy a frame with CUDA-GL Interop: {e} Falling back to the CPU transfer path.",
+                file=sys.stderr,
+            )
+            self.disable_cuda()
+            return False
+        return True
+
+    def upload_cpu(self, frame):
+        # Fallback to CPU transfer
+        frame = self.to_rgb_uint8(frame).detach().cpu().numpy()
+        ptr = GL.glMapBuffer(GL.GL_PIXEL_UNPACK_BUFFER, GL.GL_WRITE_ONLY)
+        if not ptr:
+            raise RuntimeError(f"glMapBuffer failed (glGetError={GL.glGetError()})")
+        ctypes.memmove(ptr, frame.ctypes.data, frame.nbytes)
+        GL.glUnmapBuffer(GL.GL_PIXEL_UNPACK_BUFFER)
 
     def set_tex(self):
         if self.frame is None:
@@ -250,30 +383,12 @@ class GLCanvas(glcanvas.GLCanvas):
         GL.glPixelStorei(GL.GL_UNPACK_ALIGNMENT, 1)
         GL.glBindBuffer(GL.GL_PIXEL_UNPACK_BUFFER, self.pbo)
 
-        if self.use_cuda and frame.is_cuda:
-            # Ensure the frame is on the same device as the OpenGL PBO
-            if frame.get_device() != self.device_id:
-                frame = frame.to(f"cuda:{self.device_id}")
-
+        if self.use_cuda and self.cuda_resource is not None and frame.is_cuda:
             # Zero-copy transfer using CUDA-GL Interop
-            # 1. Convert to uint8 on GPU
-            frame = frame.permute(1, 2, 0).contiguous()
-            frame = (frame.clamp(0, 1) * 255).to(torch.uint8)
-
-            # 2. Map PBO to CUDA and copy
-            ptr = self._cudart.map_resource(self.cuda_resource)
-            try:
-                self._cudart.memcpy_d2d(ptr, frame.data_ptr(), frame.nbytes)
-            finally:
-                self._cudart.unmap_resource(self.cuda_resource)
+            if not self.upload_interop(frame):
+                self.upload_cpu(frame)
         else:
-            # Fallback to CPU transfer
-            frame = frame.permute(1, 2, 0).contiguous()
-            frame = (frame.clamp(0, 1) * 255).to(torch.uint8).detach().cpu().numpy()
-
-            ptr = GL.glMapBuffer(GL.GL_PIXEL_UNPACK_BUFFER, GL.GL_WRITE_ONLY)
-            ctypes.memmove(ptr, frame.ctypes.data, frame.nbytes)
-            GL.glUnmapBuffer(GL.GL_PIXEL_UNPACK_BUFFER)
+            self.upload_cpu(frame)
 
         GL.glBindTexture(GL.GL_TEXTURE_2D, self.tex_id)
         GL.glTexSubImage2D(GL.GL_TEXTURE_2D, 0, 0, 0, w, h, GL.GL_RGB, GL.GL_UNSIGNED_BYTE, None)
@@ -436,10 +551,10 @@ WINDOW_TITLE = "iw3-desktop: Local Viewer"
 DIVERGENCE_STEP = 0.1
 
 # On-screen display (OSD): short status text drawn over the frame, once per eye
-OSD_DURATION = 3.0        # seconds
-OSD_REL_HEIGHT = 0.06     # box height relative to the eye cell height
-OSD_REL_TOP = 0.04        # top margin relative to the eye cell height
-OSD_MAX_REL_WIDTH = 0.9   # box width cap relative to the eye cell width
+OSD_DURATION = 3.0  # seconds
+OSD_REL_HEIGHT = 0.06  # box height relative to the eye cell height
+OSD_REL_TOP = 0.04  # top margin relative to the eye cell height
+OSD_MAX_REL_WIDTH = 0.9  # box width cap relative to the eye cell width
 OSD_FONT_PX = 40
 OSD_PADDING_PX = 14
 
@@ -536,20 +651,35 @@ def divergence_delta_for_hotkey(hotkey_id):
 
 
 class LocalViewerWindow(wx.Frame):
-    def __init__(self, width, height, size=(960, 540),
-                 use_cuda=False, device_id=0,
-                 uncap_fps=False, polling_interval=POLLING_INTERVAL,
-                 on_adjust_divergence=None, mouse_forwarder=None, stereo_layout="sbs"):
-        super().__init__(None, title=WINDOW_TITLE,
-                         size=size, style=wx.DEFAULT_FRAME_STYLE | wx.CLIP_CHILDREN)
+    def __init__(
+        self,
+        width,
+        height,
+        size=(960, 540),
+        use_cuda=False,
+        device_id=0,
+        uncap_fps=False,
+        polling_interval=POLLING_INTERVAL,
+        on_adjust_divergence=None,
+        mouse_forwarder=None,
+        stereo_layout="sbs",
+    ):
+        super().__init__(None, title=WINDOW_TITLE, size=size, style=wx.DEFAULT_FRAME_STYLE | wx.CLIP_CHILDREN)
         self.mouse_forwarder = mouse_forwarder
         if mouse_forwarder is not None and hasattr(mouse_forwarder.backend, "hwnd"):
             # let the forwarder give keyboard focus back to this window after each click
             mouse_forwarder.backend.hwnd = self.GetHandle()
-        self.canvas = GLCanvas(self, width=width, height=height,
-                               use_cuda=use_cuda, device_id=device_id,
-                               uncap_fps=uncap_fps, polling_interval=polling_interval,
-                               mouse_forwarder=mouse_forwarder, stereo_layout=stereo_layout)
+        self.canvas = GLCanvas(
+            self,
+            width=width,
+            height=height,
+            use_cuda=use_cuda,
+            device_id=device_id,
+            uncap_fps=uncap_fps,
+            polling_interval=polling_interval,
+            mouse_forwarder=mouse_forwarder,
+            stereo_layout=stereo_layout,
+        )
         # callable(delta) -> new divergence value, or None when adjustment is not supported
         self.on_adjust_divergence = on_adjust_divergence
         self.status = {}  # title segments, e.g. {"3D Strength": "1.2", "Click-through": "OFF"}
@@ -567,9 +697,11 @@ class LocalViewerWindow(wx.Frame):
             if self.RegisterHotKey(hotkey_id, modifiers, vk):
                 self.registered_hotkeys.append(hotkey_id)
             else:
-                print(f"Local Viewer: could not register global hotkey id={hotkey_id} vk=0x{vk:02X}"
-                      " (already taken by another app); it only works while the viewer is focused",
-                      file=sys.stderr)
+                print(
+                    f"Local Viewer: could not register global hotkey id={hotkey_id} vk=0x{vk:02X}"
+                    " (already taken by another app); it only works while the viewer is focused",
+                    file=sys.stderr,
+                )
         if self.registered_hotkeys:
             self.Bind(wx.EVT_HOTKEY, self.on_hotkey)
 
@@ -644,12 +776,21 @@ class LocalViewerWindow(wx.Frame):
         return self.canvas.closed
 
 
-class LocalViewer():
-    def __init__(self, lock, width, height,
-                 use_cuda=False, device_id=0,
-                 uncap_fps=False, polling_interval=POLLING_INTERVAL,
-                 on_adjust_divergence=None, mouse_forwarder=None, stereo_layout="sbs",
-                 **_unsupported_kwargs):
+class LocalViewer:
+    def __init__(
+        self,
+        lock,
+        width,
+        height,
+        use_cuda=False,
+        device_id=0,
+        uncap_fps=False,
+        polling_interval=POLLING_INTERVAL,
+        on_adjust_divergence=None,
+        mouse_forwarder=None,
+        stereo_layout="sbs",
+        **_unsupported_kwargs,
+    ):
         self.width = width
         self.height = height
         self.lock = lock
@@ -676,12 +817,17 @@ class LocalViewer():
     def _start(self):
         with self.op_lock:
             if self.window is None:
-                self.window = LocalViewerWindow(width=self.width, height=self.height,
-                                                use_cuda=self.use_cuda, device_id=self.device_id,
-                                                uncap_fps=self.uncap_fps, polling_interval=self.polling_interval,
-                                                on_adjust_divergence=self.on_adjust_divergence,
-                                                mouse_forwarder=self.mouse_forwarder,
-                                                stereo_layout=self.stereo_layout)
+                self.window = LocalViewerWindow(
+                    width=self.width,
+                    height=self.height,
+                    use_cuda=self.use_cuda,
+                    device_id=self.device_id,
+                    uncap_fps=self.uncap_fps,
+                    polling_interval=self.polling_interval,
+                    on_adjust_divergence=self.on_adjust_divergence,
+                    mouse_forwarder=self.mouse_forwarder,
+                    stereo_layout=self.stereo_layout,
+                )
                 self.window.Show()
                 self.initialized = True
 
@@ -758,6 +904,7 @@ def run_local_viewer_cli(worker_callback):
             worker_exception[0] = e
             print(f"LocalViewer worker error: {e}", file=sys.stderr)
             import traceback
+
             traceback.print_exc()
         finally:
             # Exit the event loop when worker finishes
@@ -790,6 +937,7 @@ def run_local_viewer_cli(worker_callback):
 
 def _test():
     import argparse
+
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--cuda", action="store_true", help="use cudaMemcpy")
     parser.add_argument("--size", choices=["hd", "4k", "8k"], default="4k", help="frame size")
@@ -835,5 +983,5 @@ def _test():
     app.MainLoop()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     _test()

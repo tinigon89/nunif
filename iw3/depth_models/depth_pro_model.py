@@ -1,13 +1,16 @@
+import gc
 import os
 from os import path
-import gc
+
 import torch
 import torch.nn.functional as F
+from PIL import Image
 from torchvision.transforms import functional as TF
-from nunif.device import create_device, autocast, device_is_mps # noqa
-from .dilation import dilate_edge, edge_dilation_is_enabled
-from . base_depth_model import BaseDepthModel, HUB_MODEL_DIR
 
+from nunif.device import autocast, create_device, device_is_mps  # noqa
+
+from ..base_depth_model import HUB_MODEL_DIR, BaseDepthModel
+from ..dilation import dilate_edge, edge_dilation_is_enabled
 
 NAME_MAP = {
     "DepthPro": 384,
@@ -32,15 +35,13 @@ def batch_preprocess(x, img_size=1536, padding=False):
     antialias = False
     if not padding:
         x = normalize(x.clone())
-        x = F.interpolate(x, size=(img_size, img_size),
-                          mode="bilinear", align_corners=False, antialias=antialias)
+        x = F.interpolate(x, size=(img_size, img_size), mode="bilinear", align_corners=False, antialias=antialias)
         return x, 0
     else:
-        pad = int(img_size * 0.25 ** 2)
+        pad = int(img_size * 0.25**2)
         size = img_size - pad * 2
         x = normalize(x.clone())
-        x = F.interpolate(x, size=(size, size),
-                          mode="bilinear", align_corners=False, antialias=antialias)
+        x = F.interpolate(x, size=(size, size), mode="bilinear", align_corners=False, antialias=antialias)
         x = F.pad(x, (pad,) * 4, mode="reflect")
 
     return x, pad
@@ -71,10 +72,18 @@ def _forward(model, x, input_shape, min_dist=1e-4, max_dist=1e4, force_disparity
 
 
 @torch.inference_mode()
-def batch_infer(model, im, flip_aug=True, low_vram=False, enable_amp=False,
-                output_device="cpu", device=None,
-                edge_dilation=2, force_disparity=False,
-                **kwargs):
+def batch_infer(
+    model,
+    im,
+    flip_aug=True,
+    low_vram=False,
+    enable_amp=True,
+    output_device="cpu",
+    device=None,
+    edge_dilation=2,
+    force_disparity=False,
+    **kwargs,
+):
     device = device if device is not None else model.device
     batch = False
     if torch.is_tensor(im):
@@ -147,14 +156,27 @@ class DepthProModel(BaseDepthModel):
         dtype = torch.float16
         encoder = NAME_MAP[model_type]
         if not os.getenv("IW3_DEBUG"):
-            model, _ = torch.hub.load("nagadomi/ml-depth-pro_iw3:main",
-                                      "DepthPro", img_size=encoder, device=device, dtype=dtype,
-                                      verbose=False, trust_repo=True)
+            model, _ = torch.hub.load(
+                "nagadomi/ml-depth-pro_iw3:main",
+                "DepthPro",
+                img_size=encoder,
+                device=device,
+                dtype=dtype,
+                verbose=False,
+                trust_repo=True,
+            )
         else:
             assert path.exists("../ml-depth-pro_iw3/hubconf.py")
-            model, _ = torch.hub.load("../ml-depth-pro_iw3",
-                                      "DepthPro", img_size=encoder, device=device, dtype=dtype,
-                                      source="local", verbose=False, trust_repo=True)
+            model, _ = torch.hub.load(
+                "../ml-depth-pro_iw3",
+                "DepthPro",
+                img_size=encoder,
+                device=device,
+                dtype=dtype,
+                source="local",
+                verbose=False,
+                trust_repo=True,
+            )
 
         model.device = device
         model.metric_depth = False
@@ -169,20 +191,40 @@ class DepthProModel(BaseDepthModel):
 
         return model
 
-    def infer(self, x, tta=False, low_vram=False, enable_amp=True, edge_dilation=0, **kwargs):
+    def infer(
+        self,
+        x: torch.Tensor | Image.Image,
+        tta: bool = False,
+        low_vram: bool = False,
+        enable_amp: bool = True,
+        edge_dilation: int | tuple[int, int] = 0,
+        depth_aa: bool = False,
+        **kwargs,
+    ) -> torch.Tensor:
         if not torch.is_tensor(x):
             x = TF.to_tensor(x).to(self.device)
+        assert torch.is_tensor(x)
         return batch_infer(
-            self.model, x, flip_aug=tta, low_vram=low_vram,
+            self.model,
+            x,
+            flip_aug=tta,
+            low_vram=low_vram,
             enable_amp=enable_amp,
             output_device=x.device,
             device=x.device,
             edge_dilation=edge_dilation,
-            force_disparity=self.force_disparity)
+            force_disparity=self.force_disparity,
+        )
+
+    order: int = 20
 
     @classmethod
     def get_name(cls):
         return "DepthPro"
+
+    @classmethod
+    def has_auto_download(cls, model_type: str) -> bool:
+        return cls.supported(model_type)
 
     @classmethod
     def has_checkpoint_file(cls, model_type):
@@ -193,8 +235,20 @@ class DepthProModel(BaseDepthModel):
         return model_type in MODEL_FILES
 
     @classmethod
+    def get_model_types(cls) -> list[str]:
+        return list(MODEL_FILES.keys())
+
+    @classmethod
     def get_model_path(cls, model_type):
         return MODEL_FILES[model_type]
+
+    @classmethod
+    def is_resolution_change_supported(cls, model_type: str) -> bool:
+        return False
+
+    @classmethod
+    def is_limit_resolution_supported(cls, model_type: str) -> bool:
+        return False
 
     def is_metric(self):
         return not self.force_disparity
@@ -209,9 +263,6 @@ class DepthProModel(BaseDepthModel):
     @classmethod
     def force_update(cls):
         BaseDepthModel.force_update_hub("nagadomi/ml-depth-pro_iw3:main", "DepthPro")
-
-    def infer_raw(self, *args, **kwargs):
-        return batch_infer(self.model, *args, **kwargs)
 
 
 def _bench():
@@ -232,16 +283,16 @@ def _bench():
 
 def _test():
     from PIL import Image
-    import cv2
-    import numpy as np
 
     model = DepthProModel("DepthPro")
     model.load(gpu=0)
-    im = Image.open("cc0/dog2.jpg").convert("RGB")
-    out = batch_infer(model.get_model(), im, flip_aug=False, int16=True,
-                      enable_amp=True, output_device="cpu", device="cuda")
-    out = out.squeeze(0).numpy().astype(np.uint16)
-    cv2.imwrite("./tmp/depth_pro_out.png", out)
+    im = Image.open("tests/images/dog_448.png").convert("RGB")
+    out = batch_infer(
+        model.get_model(), im, force_disparity=True, flip_aug=False, enable_amp=True, output_device="cpu", device="cuda"
+    )
+    out = (out - out.min()) / ((out.max() - out.min()) + 1e-5)
+    out = (0xFFFF * out).to(torch.uint16).squeeze(0).cpu().numpy()
+    Image.fromarray(out).save("./tmp/depth_pro_out.png")
 
 
 if __name__ == "__main__":

@@ -1,8 +1,9 @@
 # overlay
-from PIL import Image, ImageOps
 import random
+
 import torchvision.transforms as T
 import torchvision.transforms.functional as TF
+from PIL import Image, ImageOps
 
 
 def _random_crop(x, width, height):
@@ -37,25 +38,30 @@ def mixup(a, b=None, alpha=0.5):
     return out
 
 
-class RandomOverlay():
+class RandomOverlay:
     def __call__(self, a, b=None):
         return mixup(a, b, alpha=random.uniform(0.0, 1.0))
 
 
-if __name__ == "__main__":
+def _test():
     import time
-    a = Image.open("cc0/bottle.jpg")
-    b = Image.open("cc0/lighthouse.jpg")
 
-    if False:
-        for i in range(10):
+    a = Image.open("tests/images/bottle_448.png")
+    b = Image.open("tests/images/lighthouse_448.png")
+
+    if True:
+        for i in range(2):
             out = mixup(a, b)
             out.show()
-            time.sleep(1)
+            time.sleep(2)
 
     if True:
         transform = RandomOverlay()
-        for i in range(10):
+        for i in range(2):
             out = transform(b)
             out.show()
-            time.sleep(1)
+            time.sleep(2)
+
+
+if __name__ == "__main__":
+    _test()

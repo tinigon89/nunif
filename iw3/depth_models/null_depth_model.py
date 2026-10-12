@@ -1,10 +1,13 @@
-""" Dummy depth model for performance benchmark
-"""
+"""Dummy depth model for performance benchmark"""
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from .dilation import dilate_edge, edge_dilation_is_enabled
-from . base_depth_model import BaseDepthModel
+from PIL import Image
+from torchvision.transforms import functional as TF
+
+from ..base_depth_model import BaseDepthModel
+from ..dilation import dilate_edge, edge_dilation_is_enabled
 
 
 class NullDepth(nn.Module):
@@ -29,24 +32,39 @@ class NullDepthModel(BaseDepthModel):
         return NullDepth(resolution)
 
     @torch.inference_mode()
-    def infer(self, x, tta=False, low_vram=False, enable_amp=True, edge_dilation=0, **kwargs):
+    def infer(
+        self,
+        x: torch.Tensor | Image.Image,
+        tta: bool = False,
+        low_vram: bool = False,
+        enable_amp: bool = True,
+        edge_dilation: int | tuple[int, int] = 0,
+        depth_aa: bool = False,
+        **kwargs,
+    ) -> torch.Tensor:
+        if isinstance(x, torch.Tensor):
+            x_tensor: torch.Tensor = x
+        else:
+            x_tensor = TF.to_tensor(x)
         batch = True
-        if x.ndim == 3:
+        if x_tensor.ndim == 3:
             batch = False
-            x = x.unsqueeze(0)
+            x_tensor = x_tensor.unsqueeze(0)
 
         if tta:
-            x = (self.model(x) + self.model(x)) * 0.5
+            x_out = (self.model(x_tensor) + self.model(x_tensor)) * 0.5
         else:
-            x = self.model(x)
+            x_out = self.model(x_tensor)
 
         if edge_dilation_is_enabled(edge_dilation):
-            x = dilate_edge(x, edge_dilation)
+            x_out = dilate_edge(x_out, edge_dilation)
 
         if not batch:
-            x = x.squeeze(0)
+            x_out = x_out.squeeze(0)
 
-        return x
+        return x_out
+
+    order: int = 999
 
     @classmethod
     def get_name(cls):
@@ -59,6 +77,10 @@ class NullDepthModel(BaseDepthModel):
     @classmethod
     def supported(cls, model_type):
         return model_type == "NULL"
+
+    @classmethod
+    def get_model_types(cls) -> list[str]:
+        return ["NULL"]
 
     @classmethod
     def get_model_path(cls, model_type):

@@ -1,5 +1,5 @@
-import torch.nn.functional as F
 import torch
+import torch.nn.functional as F
 
 
 def edge_dilation_parse(edge_dilation):
@@ -16,8 +16,7 @@ def edge_dilation_parse(edge_dilation):
     elif edge_dilation is None:
         x = y = 0
     else:
-        raise ValueError(f"Unsupported edge_dilation type {type(edge_dilation)}. "
-                         "Supported types: int, list, tuple.")
+        raise ValueError(f"Unsupported edge_dilation type {type(edge_dilation)}. Supported types: int, list, tuple.")
 
     return x, y
 
@@ -28,11 +27,18 @@ def edge_dilation_is_enabled(edge_dilation):
 
 
 def gaussian_blur(x):
-    kernel = torch.tensor([
-        [21, 31, 21],
-        [31, 48, 31],
-        [21, 31, 21],
-    ], dtype=torch.float32, device=x.device).reshape(1, 1, 3, 3) / 256.0
+    kernel = (
+        torch.tensor(
+            [
+                [21, 31, 21],
+                [31, 48, 31],
+                [21, 31, 21],
+            ],
+            dtype=torch.float32,
+            device=x.device,
+        ).reshape(1, 1, 3, 3)
+        / 256.0
+    )
     x = F.pad(x, [1] * 4, mode="replicate")
     x = F.conv2d(x, weight=kernel, bias=None, stride=1, padding=0, groups=1)
     return x
@@ -154,11 +160,12 @@ def mask_closing(mask, kernel_size=3, n_iter=2):
 
 def _test_dialte_edge():
     import time
+
     import torchvision.io as io
     import torchvision.transforms.functional as TF
 
-    x1 = (io.read_image("cc0/depth/dog.png") / 65535.0).mean(dim=0, keepdim=True)
-    x2 = (io.read_image("cc0/depth/light_house.png") / 65535.0).mean(dim=0, keepdim=True)
+    x1 = io.read_image("tests/images/depth/dog_448.png") / 65535.0
+    x2 = io.read_image("tests/images/depth/lighthouse_448.png") / 65535.0
     x = torch.stack([x1, x2])
     z = edge_weight(x)
     TF.to_pil_image(z[0]).show()
@@ -175,10 +182,11 @@ def _test_dialte_edge():
 
 def _test_mask():
     import time
+
     import torchvision.io as io
     import torchvision.transforms.functional as TF
 
-    mask = io.read_image("cc0/mask/dog.png") / 255.0
+    mask = io.read_image("tests/images/inpaint_mask/dog_448.png") / 255.0
     mask = mask.unsqueeze(0)
     inner = dilate_inner(mask, n_iter=2, base_width=mask.shape[-1] // 2)[0]
     outer = dilate_outer(mask, n_iter=2)[0]

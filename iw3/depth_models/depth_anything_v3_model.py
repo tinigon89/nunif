@@ -1,14 +1,17 @@
 import os
 from os import path
-import torch
-from torchvision.transforms import functional as TF
-from nunif.device import create_device, autocast, device_is_mps, device_is_xpu # noqa
-from .dilation import dilate_edge, edge_dilation_is_enabled
-from .base_depth_model import BaseDepthModel, HUB_MODEL_DIR
-from .depth_anything_model import batch_preprocess
-from .models import DepthAA
-from .depth_scaler import EMAMinMaxScaler
 
+import torch
+from PIL import Image
+from torchvision.transforms import functional as TF
+
+from nunif.device import autocast, create_device, device_is_mps, device_is_xpu  # noqa
+
+from ..base_depth_model import HUB_MODEL_DIR, BaseDepthModel
+from ..depth_scaler import EMAMinMaxScaler
+from ..dilation import dilate_edge, edge_dilation_is_enabled
+from ..models import DepthAA
+from .depth_anything_model import batch_preprocess
 
 NAME_MAP = {
     "Any_V3_Mono": "da3mono-large",
@@ -59,11 +62,20 @@ def _forward(model, x, enable_amp, sky_thresh=0.3, raw_output=False):
 
 
 @torch.inference_mode()
-def batch_infer(model, im, flip_aug=True, low_vram=False, enable_amp=False,
-                output_device="cpu", device=None, edge_dilation=2, depth_aa=None,
-                limit_resolution=False,
-                raw_output=False,
-                **kwargs):
+def batch_infer(
+    model,
+    im,
+    flip_aug=True,
+    low_vram=False,
+    enable_amp=True,
+    output_device="cpu",
+    device=None,
+    edge_dilation=2,
+    depth_aa=None,
+    limit_resolution=False,
+    raw_output=False,
+    **kwargs,
+):
     device = device if device is not None else model.device
     batch = False
     if torch.is_tensor(im):
@@ -139,29 +151,51 @@ class DepthAnythingV3MonoModel(BaseDepthModel):
 
         model_name = NAME_MAP[model_type]
         if not os.getenv("IW3_DEBUG"):
-            model = torch.hub.load("nagadomi/Depth-Anything-3_iw3:main",
-                                   "load_model", model_name=model_name,
-                                   verbose=False, trust_repo=True)
+            model = torch.hub.load(
+                "nagadomi/Depth-Anything-3_iw3:main",
+                "load_model",
+                model_name=model_name,
+                verbose=False,
+                trust_repo=True,
+            )
         else:
             assert path.exists("../Depth-Anything-3_iw3/hubconf.py")
-            model = torch.hub.load("../Depth-Anything-3_iw3",
-                                   "load_model", model_name=model_name, source="local",
-                                   verbose=False, trust_repo=True)
+            model = torch.hub.load(
+                "../Depth-Anything-3_iw3",
+                "load_model",
+                model_name=model_name,
+                source="local",
+                verbose=False,
+                trust_repo=True,
+            )
 
         model.prep_lower_bound = resolution or 392
         if model.prep_lower_bound % 14 != 0:
             # From GUI, 512 -> 518
-            model.prep_lower_bound += (14 - model.prep_lower_bound % 14)
+            model.prep_lower_bound += 14 - model.prep_lower_bound % 14
         model.device = device
         self.raw_output = raw_output
 
         return model
 
-    def infer(self, x, tta=False, low_vram=False, enable_amp=True, edge_dilation=0, depth_aa=False, **kwargs):
+    def infer(
+        self,
+        x: torch.Tensor | Image.Image,
+        tta: bool = False,
+        low_vram: bool = False,
+        enable_amp: bool = True,
+        edge_dilation: int | tuple[int, int] = 0,
+        depth_aa: bool = False,
+        **kwargs,
+    ) -> torch.Tensor:
         if not torch.is_tensor(x):
             x = TF.to_tensor(x).to(self.device)
+        assert torch.is_tensor(x)
         return batch_infer(
-            self.model, x, flip_aug=tta, low_vram=low_vram,
+            self.model,
+            x,
+            flip_aug=tta,
+            low_vram=low_vram,
             enable_amp=enable_amp,
             output_device=x.device,
             device=x.device,
@@ -171,9 +205,15 @@ class DepthAnythingV3MonoModel(BaseDepthModel):
             limit_resolution=self.limit_resolution,
         )
 
+    order: int = 40
+
     @classmethod
     def get_name(cls):
         return "DepthAnythingV3Mono"
+
+    @classmethod
+    def has_auto_download(cls, model_type: str) -> bool:
+        return cls.supported(model_type)
 
     @classmethod
     def has_checkpoint_file(cls, model_type):
@@ -182,6 +222,10 @@ class DepthAnythingV3MonoModel(BaseDepthModel):
     @classmethod
     def supported(cls, model_type):
         return model_type in MODEL_FILES
+
+    @classmethod
+    def get_model_types(cls) -> list[str]:
+        return list(MODEL_FILES.keys())
 
     @classmethod
     def get_model_path(cls, model_type):
@@ -195,16 +239,17 @@ class DepthAnythingV3MonoModel(BaseDepthModel):
         return True
 
     @classmethod
+    def is_depth_aa_supported(cls, model_type: str) -> bool:
+        return model_type in AA_SUPPORTED_MODELS
+
+    @classmethod
     def force_update(cls):
         BaseDepthModel.force_update_hub("nagadomi/Depth-Anything-3_iw3:main", "load_model")
 
-    def infer_raw(self, *args, **kwargs):
-        return batch_infer(self.model, *args, **kwargs)
-
 
 def _bench(resolution=504, do_compile=False):
-    import time
     import gc
+    import time
 
     gc.collect()
     torch._dynamo.reset()

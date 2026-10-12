@@ -1,22 +1,22 @@
-import os
-import io
-import sys
-import zipfile
 import datetime
-import traceback
+import io
 import json
+import os
+import sys
+import traceback
+import zipfile
+from typing import Any, Dict, List, Optional
+
 import av
 import pysubs2
-from PIL import Image as PILImage
+from av.stream import Disposition
 from fastapi import HTTPException, Response
 from fastapi.responses import FileResponse
-from av.stream import Disposition
-from typing import List, Dict, Any, Optional
+from PIL import Image as PILImage
 
-from .server_state import ServerState
-from .stereo_detector import detect_stereo_format, FLAT, SBS_FULL, SBS_HALF, SBS_FULL_CROSS, TB_FULL, TB_HALF
 from .dir_config import PUBLIC_DIR
-
+from .server_state import ServerState
+from .stereo_detector import FLAT, SBS_FULL, SBS_FULL_CROSS, SBS_HALF, TB_FULL, TB_HALF, detect_stereo_format
 
 IMAGE_EXTENSIONS = {".png", ".jpeg", ".jpg", ".webp"}
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".webm"}
@@ -62,7 +62,7 @@ def create_thumbnail_data(fp: io.BytesIO, stereo_fmt: str) -> Optional[bytes]:
 
 def create_video_thumbnail(fp: Any, stereo_fmt: str) -> Optional[bytes]:
     try:
-        with av.open(fp, mode="r", metadata_errors="ignore") as container:
+        with av.open(fp, mode="r") as container:
             stream = container.streams.video[0]
             target_timestamp = int(1.0 / stream.time_base)
             container.seek(target_timestamp, any_frame=False, backward=True, stream=stream)
@@ -93,7 +93,7 @@ def extract_subtitle(fp: Any) -> Optional[List[Dict[str, str]]]:
                 score += 1
             return score
 
-        with av.open(fp, mode="r", metadata_errors="replace") as container:
+        with av.open(fp, mode="r") as container:
             if len(container.streams.subtitles) == 0:
                 return None
 
@@ -330,7 +330,9 @@ class MediaLibrary:
                 fmt = detect_stereo_format(abs_path)
                 ext = os.path.splitext(abs_path)[1].lower()
                 with open(abs_path, "rb") as f:
-                    thumb_data = create_video_thumbnail(f, fmt) if ext in VIDEO_EXTENSIONS else create_thumbnail_data(f, fmt)
+                    thumb_data = (
+                        create_video_thumbnail(f, fmt) if ext in VIDEO_EXTENSIONS else create_thumbnail_data(f, fmt)
+                    )
 
             if thumb_data:
                 self.state.cache_db.set(etag, thumb_data)

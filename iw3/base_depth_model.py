@@ -1,20 +1,23 @@
-from abc import ABCMeta, abstractmethod
 import contextlib
-from nunif.utils.ui import HiddenPrints, TorchHubDir
-from nunif.models.data_parallel import DeviceSwitchInference
-from nunif.models.utils import compile_model
 import os
 import pickle
+from abc import ABCMeta, abstractmethod
+
 import torch
 from PIL import Image
 from PIL.PngImagePlugin import PngInfo
 from torchvision.transforms import functional as TF
+
 from nunif.device import create_device
+from nunif.models.data_parallel import DeviceSwitchInference
+from nunif.models.utils import compile_model
+from nunif.utils.ui import HiddenPrints, TorchHubDir
+
 from .depth_scaler import EMAMinMaxScaler
 from .hub_dir import HUB_MODEL_DIR
 
 
-class _CompileContext():
+class _CompileContext:
     def __init__(self, base_model):
         self.base_model = base_model
 
@@ -28,6 +31,105 @@ class _CompileContext():
 
 
 class BaseDepthModel(metaclass=ABCMeta):
+    _subclasses: list[type["BaseDepthModel"]] = []
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        if cls not in BaseDepthModel._subclasses:
+            BaseDepthModel._subclasses.append(cls)
+
+    order: int = 100
+
+    @classmethod
+    def get_registered_classes(cls) -> list[type["BaseDepthModel"]]:
+        from . import depth_models  # noqa: F401
+
+        return sorted(cls._subclasses, key=lambda c: getattr(c, "order", 100))
+
+    @classmethod
+    def get_all_model_types(cls) -> list[str]:
+        model_types: list[str] = []
+        for subcls in cls.get_registered_classes():
+            for name in subcls.get_model_types():
+                if name not in model_types:
+                    model_types.append(name)
+        return model_types
+
+    @classmethod
+    def has_auto_download(cls, model_type: str) -> bool:
+        if cls is BaseDepthModel:
+            subcls = cls.get_depth_model_class(model_type)
+            return subcls.has_auto_download(model_type) if subcls is not None else False
+        return False
+
+    @classmethod
+    def is_small(cls, model_type: str) -> bool:
+        if cls is BaseDepthModel:
+            subcls = cls.get_depth_model_class(model_type)
+            return subcls.is_small(model_type) if subcls is not None else False
+        return False
+
+    @classmethod
+    def is_desktop_supported(cls) -> bool:
+        return True
+
+    @classmethod
+    def is_model_available(cls, model_type: str) -> bool:
+        if cls is BaseDepthModel:
+            subcls = cls.get_depth_model_class(model_type)
+            return subcls.is_model_available(model_type) if subcls is not None else False
+        return cls.has_auto_download(model_type) or cls.has_checkpoint_file(model_type)
+
+    @classmethod
+    def get_available_models(cls, desktop: bool = False, small_only: bool = False) -> list[str]:
+        models: list[str] = []
+        for subcls in cls.get_registered_classes():
+            if desktop and not subcls.is_desktop_supported():
+                continue
+            for m in subcls.get_model_types():
+                if m == "NULL":
+                    continue
+                if small_only and not subcls.is_small(m):
+                    continue
+                if subcls.is_model_available(m):
+                    models.append(m)
+        return models
+
+    @classmethod
+    def get_depth_model_class(cls, model_type: str) -> type["BaseDepthModel"] | None:
+        for subcls in cls._subclasses:
+            if subcls.supported(model_type):
+                return subcls
+        return None
+
+    @classmethod
+    def has_model_checkpoint_file(cls, model_type: str) -> bool:
+        if cls is BaseDepthModel:
+            subcls = cls.get_depth_model_class(model_type)
+            return subcls.has_checkpoint_file(model_type) if subcls is not None else False
+        return cls.has_checkpoint_file(model_type)
+
+    @classmethod
+    def is_depth_aa_supported(cls, model_type: str) -> bool:
+        if cls is BaseDepthModel:
+            subcls = cls.get_depth_model_class(model_type)
+            return subcls.is_depth_aa_supported(model_type) if subcls is not None else False
+        return False
+
+    @classmethod
+    def is_resolution_change_supported(cls, model_type: str) -> bool:
+        if cls is BaseDepthModel:
+            subcls = cls.get_depth_model_class(model_type)
+            return subcls.is_resolution_change_supported(model_type) if subcls is not None else True
+        return True
+
+    @classmethod
+    def is_limit_resolution_supported(cls, model_type: str) -> bool:
+        if cls is BaseDepthModel:
+            subcls = cls.get_depth_model_class(model_type)
+            return subcls.is_limit_resolution_supported(model_type) if subcls is not None else True
+        return True
+
     def __init__(self, model_type):
         self.device = None
         self.model = None
@@ -61,6 +163,11 @@ class BaseDepthModel(metaclass=ABCMeta):
 
     @classmethod
     @abstractmethod
+    def get_model_types(cls) -> list[str]:
+        pass
+
+    @classmethod
+    @abstractmethod
     def has_checkpoint_file(cls, model_type):
         pass
 
@@ -78,6 +185,9 @@ class BaseDepthModel(metaclass=ABCMeta):
 
     def is_video_supported(self):
         return True
+
+    def is_streaming(self):
+        return False
 
     @staticmethod
     def force_update_hub(github, model):
@@ -126,7 +236,7 @@ class BaseDepthModel(metaclass=ABCMeta):
 
         self.model = self.model.to(self.device).eval()
 
-        if (isinstance(gpu, (list, tuple)) and len(gpu) > 1):
+        if isinstance(gpu, (list, tuple)) and len(gpu) > 1:
             if self.multi_gpu_supported(self.model_type):
                 self.model = DeviceSwitchInference(self.model, device_ids=gpu)
             else:
@@ -148,8 +258,26 @@ class BaseDepthModel(metaclass=ABCMeta):
             self.model_backup = None
 
     @abstractmethod
-    def infer(self, x, *kwargs):
+    def infer(
+        self,
+        x: torch.Tensor | Image.Image,
+        tta: bool = False,
+        low_vram: bool = False,
+        enable_amp: bool = True,
+        edge_dilation: int | tuple[int, int] = 0,
+        depth_aa: bool = False,
+        **kwargs,
+    ) -> torch.Tensor | None:
         pass
+
+    def flush(
+        self,
+        enable_amp: bool = True,
+        edge_dilation: int | tuple[int, int] = 0,
+        depth_aa: bool = False,
+        **kwargs,
+    ) -> torch.Tensor | None:
+        return None
 
     def enable_ema(self, decay, buffer_size=None):
         self.scaler.reset(decay=decay, buffer_size=buffer_size)
@@ -180,6 +308,10 @@ class BaseDepthModel(metaclass=ABCMeta):
         return self.scaler.flush(return_minmax=return_minmax)
 
     def minmax_normalize(self, depth, reset_ema=None):
+        if depth is None:
+            return []
+        if depth.ndim == 3:
+            depth = depth.unsqueeze(0)
         assert depth.ndim == 4
         reset_ema = [False] * depth.shape[0] if reset_ema is None else reset_ema
         assert len(reset_ema) == depth.shape[0]
@@ -194,19 +326,23 @@ class BaseDepthModel(metaclass=ABCMeta):
         return normalized_depths
 
     @staticmethod
+    def normalized_depth_to_uint16_image(depth: torch.Tensor) -> Image.Image:
+        depth = torch.clamp(depth, 0, 1)
+        depth_int = (0xFFFF * depth).round().to(torch.uint16).squeeze(0).cpu().numpy()
+        return Image.fromarray(depth_int)
+
+    @staticmethod
     def save_normalized_depth(depth, file_path, png_info={}, min_depth_value=None, max_depth_value=None):
         if min_depth_value is not None:
             png_info.update(iw3_min_depth_value=float(min_depth_value))
         if max_depth_value is not None:
             png_info.update(iw3_max_depth_value=float(max_depth_value))
 
-        depth = torch.clamp(depth, 0, 1)
-        depth_int = (0xffff * depth).to(torch.uint16).squeeze(0).cpu().numpy()
+        im = BaseDepthModel.normalized_depth_to_uint16_image(depth)
         metadata = PngInfo()
         for k, v in png_info.items():
             metadata.add_text(k, str(v))
 
-        im = Image.fromarray(depth_int)
         im.save(file_path, pnginfo=metadata)
 
     @staticmethod
@@ -224,7 +360,7 @@ class BaseDepthModel(metaclass=ABCMeta):
 
             depth = TF.pil_to_tensor(im)
             if depth.dtype != torch.float32:
-                depth = torch.clamp(depth.to(torch.float32) / 0xffff, 0, 1)
+                depth = torch.clamp(depth.to(torch.float32) / 0xFFFF, 0, 1)
             if depth.shape[0] != 1:
                 depth = torch.mean(depth, dim=0, keepdim=True)
 

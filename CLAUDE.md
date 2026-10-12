@@ -42,6 +42,12 @@ windows_package\python\python.exe -m pip install --no-cache-dir --upgrade -r req
 
 **Cảnh báo:** `update.bat` chạy `git pull --ff` và nếu thất bại sẽ `git reset --hard`. Không bao giờ chạy nó khi đang merge dở hoặc có thay đổi chưa commit.
 
+## Hub cache của torch
+
+- Các repo code model (`nagadomi_Depth-Anything_iw3_main`, `..._Depth-Anything-3_iw3_main`, `..._Video-Depth-Anything_iw3_main`...) được torch.hub cache trong `iw3\pretrained_models\hub`. torch.hub **không tự cập nhật** cache này.
+- Khi upstream đổi hub repo (ví dụ thêm Ultimate DAV2) sẽ gặp lỗi kiểu `Cannot find callable UltimateDAV2 in hubconf`. Cách sửa: xóa đúng thư mục cache đó, lần load tiếp theo torch.hub tải lại. Kiểm tra nhanh bằng cách so `hubconf.py` trong cache với bản raw trên GitHub.
+- Ultimate DAV2 (cc-by-nc) đã tải ngày 2026-10-12 vào `checkpoints` với tên `ultimate_dav2_vits_INet_UL`, `ultimate_dav2_vits_INet_quality`, `ultimate_dav2_vitB_INet_quality` (.safetensors). Đo được UL 7.3 ms, S 8.0 ms, B 8.8 ms, pipeline 50 đến 56 fps, ngang Any_V2_S.
+
 ## Kiểm thử và lint
 
 - Unit test desktop (unittest, không cần pytest):

@@ -73,6 +73,25 @@ windows_package\python\python.exe -m pip install --no-cache-dir --upgrade -r req
 - torch.compile cần `windows_package\torch_compile\install_python_dev.bat` vì Python embeddable thiếu `Python.h`. Lợi ích thấp với V2_S.
 - Virtual Desktop Streamer chạy nền và mã hóa 4K làm FPS tụt khoảng 15. Khi đó đặt Streaming FPS 48 cho phim 24 fps.
 
+## GPU mỗi model khi chạy bình thường (đo 2026-10-13, 60 fps, màn hình luôn đổi khung, row_flow_v3_sym, Edge Fix 4)
+
+| Cấu hình | GPU util | Công suất | FPS viewer |
+|---|---|---|---|
+| nền (chỉ DWM 4K 120 Hz + cửa sổ anim) | ~30 % | 65 W | |
+| NULL depth + NULL method | 39 % | 118 W | 58 |
+| NULL depth + row_flow_v3_sym | 40 % | 156 W | 57 |
+| Ultimate_DAV2_UL | 62 % | 197 W | 57 |
+| Ultimate_DAV2_S | 66 % | 198 W | 54 |
+| Any_V2_S | 62 % | 200 W | 57 |
+| Ultimate_DAV2_B | 80 % | 256 W | 51 |
+| Any_B | 82 % | 268 W | 58 |
+| Any_V2_N_B | 85 % | 267 W | 49 |
+| VDA_Stream_S | 77 % | 223 W | 45 |
+| Any_V3_Mono | 93 % | 315 W | 29 |
+
+- Công suất là thước đo tin cậy hơn util %. Small tốn thêm ~135 W, Base ~190 W, V3 ~250 W so với nền.
+- Muốn chừa GPU cho game thì dùng Small (UL hoặc Any_V2_S, ~62 %), Base chiếm ~80 % nên gần như không còn chỗ.
+
 ## Chạy song song với game (đo 2026-10-13, Ultimate_DAV2_B + row_flow_v3_sym, màn hình luôn đổi khung)
 
 | GPU bị game chiếm | FPS iw3 |

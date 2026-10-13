@@ -18,7 +18,7 @@
 | `dev`    | bản sao sạch của upstream, **không commit lên đây** | `origin/dev`, `upstream/dev` |
 | `dev-jk` | dev + code riêng, dùng hằng ngày | `origin/dev-jk` |
 
-- `origin` = fork https://github.com/tinigon89/nunif, `upstream` = nagadomi/nunif. Credential helper của repo là `gh auth git-credential`, tài khoản gh active là tinigon89.
+- `origin` = fork https://github.com/tinigon89/nunif, `upstream` = nagadomi/nunif. Credential helper của repo là một helper nhỏ gọi `gh auth token --user tinigon89`, nên push vẫn đúng tài khoản dù gh đang active tài khoản khác (doopldeveloper). Nếu push báo `could not read Password`, kiểm tra `gh auth status` còn đăng nhập tinigon89.
 - Đóng góp ngược: tạo nhánh từ `dev`, cherry-pick commit cần gửi, mở PR. Không gửi thẳng `dev-jk`.
 
 ### Quy trình lấy bản mới từ tác giả

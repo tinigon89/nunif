@@ -73,6 +73,20 @@ windows_package\python\python.exe -m pip install --no-cache-dir --upgrade -r req
 - torch.compile cần `windows_package\torch_compile\install_python_dev.bat` vì Python embeddable thiếu `Python.h`. Lợi ích thấp với V2_S.
 - Virtual Desktop Streamer chạy nền và mã hóa 4K làm FPS tụt khoảng 15. Khi đó đặt Streaming FPS 48 cho phim 24 fps.
 
+## Chạy song song với game (đo 2026-10-13, Ultimate_DAV2_B + row_flow_v3_sym, màn hình luôn đổi khung)
+
+| GPU bị game chiếm | FPS iw3 |
+|---|---|
+| không | 58 |
+| game 60 fps, ~8 ms GPU mỗi khung (~50 %) | 57 |
+| game 60 fps, ~12 ms mỗi khung (~75 %) | 45 |
+| game 120 fps, ~6 ms mỗi khung (~72 %) | 43 |
+| GPU bão hòa 99 % | 27 đến 30 |
+
+- iw3 cần khoảng 8 ms GPU rảnh trong mỗi 16.7 ms để giữ 60 fps. Game phải bị giới hạn fps và render đủ nhẹ để tổng tải còn dưới ~50 %.
+- Khi GPU bão hòa, đổi model nhẹ hơn hay method monobw **không** giúp, vì nghẽn là chờ lát cắt GPU chứ không phải FLOPs.
+- Đo bằng `scratchpad/gpu_load_duty.py` (tải theo chu kỳ) và `screen_anim.py` (cửa sổ tự vẽ 60 Hz để capture không bị giới hạn bởi màn hình tĩnh). Nếu Screenshot FPS ≈ Estimated FPS thì đang bị giới hạn bởi nội dung, không phải GPU.
+
 ## Người dùng
 
 - Trao đổi bằng tiếng Việt. Chỉ dùng iw3-desktop (Local Viewer, Full SBS, Pico 4 qua Virtual Desktop).

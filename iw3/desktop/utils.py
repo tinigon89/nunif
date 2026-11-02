@@ -21,6 +21,7 @@ from nunif.models.data_parallel import DeviceSwitchInference
 from .. import models  # noqa
 from .. import utils as IW3U
 from ..stereo_model_factory import get_mlbw_divergence_level
+from .params import ADJUSTABLE_PARAMS, format_param_value
 from .screenshot_process import (  # noqa
     ScreenshotProcess,
     enum_window_names,
@@ -211,21 +212,32 @@ DIVERGENCE_MIN = 0.0
 DIVERGENCE_MAX = 10.0
 
 
-def adjust_divergence(args, delta):
-    """Change args.divergence by delta while the pipeline is running.
+def adjust_param(args, name: str, delta: float) -> float:
+    """Change args.<name> by delta while the pipeline is running (see ADJUSTABLE_PARAMS).
 
-    The value is rounded to one decimal and clamped to [DIVERGENCE_MIN, DIVERGENCE_MAX].
-    If args.state["on_divergence_changed"] is set, it is called with the new value
-    (used by the GUI to sync its controls). Returns the new value.
+    The value is rounded and clamped per the table. foreground_scale also refreshes
+    args.mapper, as the GUI adjustment panel does. If args.state["on_param_changed"] is
+    set, it is called with (name, value) so the GUI can sync its controls. Returns the value.
     """
+    spec = ADJUSTABLE_PARAMS[name]
     with args.state["args_lock"]:
-        value = round(args.divergence + delta, 1)
-        value = min(max(value, DIVERGENCE_MIN), DIVERGENCE_MAX)
-        args.divergence = value
-    hook = args.state.get("on_divergence_changed")
+        value = round(getattr(args, name) + delta, spec.decimals)
+        value = min(max(value, spec.min), spec.max)
+        setattr(args, name, value)
+        if name == "foreground_scale":
+            depth_model = args.state.get("depth_model")
+            if depth_model is not None:
+                args.mapper = IW3U.resolve_mapper_name(
+                    mapper=None, foreground_scale=value, metric_depth=depth_model.is_metric()
+                )
+    hook = args.state.get("on_param_changed")
     if hook is not None:
-        hook(value)
+        hook(name, value)
     return value
+
+
+def adjust_divergence(args, delta):
+    return adjust_param(args, "divergence", delta)
 
 
 def test_output_size(size, args, depth_model, side_model):
@@ -420,12 +432,14 @@ def iw3_desktop_main(args, init_wxapp=True):
         IS_ROCM = getattr(torch.version, "hip", None) is not None
         USE_CUDA = torch.cuda.is_available() and not IS_ROCM
 
-        def on_adjust_divergence(delta):
-            # Called from the viewer window ([ / ] keys) on the wx main thread
-            value = adjust_divergence(args, delta)
+        fps_stats = {"estimated": None, "screenshot": None, "streaming": None}
+
+        def on_adjust(name, delta):
+            # Called from the viewer window (hotkeys) on the wx main thread
+            value = adjust_param(args, name, delta)
             if args.state["fps_event"] is None:
                 # CLI: the status line uses "\r", so start a fresh line
-                print(f"\n3D Strength = {value:.1f}")
+                print(f"\n{ADJUSTABLE_PARAMS[name].label} = {format_param_value(name, value)}")
             return value
 
         from .click_through import MouseForwarder, Win32MouseBackend, get_monitor_rect, layout_from_args
@@ -448,7 +462,8 @@ def iw3_desktop_main(args, init_wxapp=True):
             height=output_frame_height,
             use_cuda=USE_CUDA,
             uncap_fps=args.uncap_fps,
-            on_adjust_divergence=on_adjust_divergence,
+            on_adjust=on_adjust,
+            fps_provider=lambda: fps_stats,
             mouse_forwarder=mouse_forwarder,
             stereo_layout=layout_from_args(args),
         )
@@ -520,6 +535,10 @@ def iw3_desktop_main(args, init_wxapp=True):
                     mean_processing_time = sum(fps_counter) / len(fps_counter)
                     estimated_fps = 1.0 / mean_processing_time
                     screen_size_tuple = (screen_size, (frame_width, frame_height))
+                    if args.local_viewer:
+                        fps_stats.update(
+                            estimated=estimated_fps, screenshot=screenshot_thread.get_fps(), streaming=server.get_fps()
+                        )
                     if args.state["fps_event"] is not None:
                         args.state["fps_event"].update(
                             estimated_fps, screenshot_thread.get_fps(), server.get_fps(), screen_size_tuple

@@ -10,6 +10,8 @@ import wx
 from OpenGL import GL
 from wx import glcanvas
 
+from .params import ADJUSTABLE_PARAMS, format_param_value
+
 POLLING_INTERVAL = 1.0 / 240.0
 
 
@@ -203,7 +205,8 @@ class GLCanvas(glcanvas.GLCanvas):
         self.osd_tex_id = None
         self.osd_size = (0, 0)
         self.osd_pending = None  # text waiting to be uploaded as a texture
-        self.osd_until = 0.0  # perf_counter time when the OSD hides
+        self.osd_until = 0.0  # perf_counter time when the OSD hides (inf when sticky)
+        self.osd_sticky = False  # True while a persistent OSD (e.g. FPS line) is shown
         self.osd_dirty = False  # redraw needed even without a new frame
 
         if uncap_fps:
@@ -442,14 +445,26 @@ class GLCanvas(glcanvas.GLCanvas):
         GL.glVertex2f(x0, y1)
         GL.glEnd()
 
-    def show_osd(self, text):
-        """Show `text` over the frame for OSD_DURATION seconds (main thread)."""
+    def show_osd(self, text, sticky=False):
+        """Show `text` over the frame (main thread). Temporary OSD hides after OSD_DURATION
+        seconds; a sticky OSD stays until hide_osd() or the next show_osd()."""
         self.osd_pending = text
-        self.osd_until = time.perf_counter() + OSD_DURATION
+        self.osd_sticky = sticky
+        self.osd_until = float("inf") if sticky else time.perf_counter() + OSD_DURATION
         self.osd_dirty = True
         self.Refresh()
-        # make sure it disappears even if no new frame arrives
-        wx.CallLater(int(OSD_DURATION * 1000) + 50, self._on_osd_expire)
+        if not sticky:
+            # make sure it disappears even if no new frame arrives
+            wx.CallLater(int(OSD_DURATION * 1000) + 50, self._on_osd_expire)
+
+    def hide_osd(self):
+        self.osd_sticky = False
+        self.osd_until = 0.0
+        self.osd_dirty = True
+        self.Refresh()
+
+    def osd_temporary_active(self):
+        return not self.osd_sticky and time.perf_counter() < self.osd_until
 
     def _on_osd_expire(self):
         if not self.closed and time.perf_counter() >= self.osd_until:
@@ -548,7 +563,6 @@ class GLCanvas(glcanvas.GLCanvas):
 
 
 WINDOW_TITLE = "iw3-desktop: Local Viewer"
-DIVERGENCE_STEP = 0.1
 
 # On-screen display (OSD): short status text drawn over the frame, once per eye
 OSD_DURATION = 3.0  # seconds
@@ -619,35 +633,63 @@ def render_osd_image(text, font_px=OSD_FONT_PX, padding=OSD_PADDING_PX):
     return rgba.tobytes(), w, h
 
 
-def divergence_delta_for_key(ch):
-    """Map a typed character to a 3D Strength (divergence) change. `]` up, `[` down, else None."""
-    if ch == "]":
-        return DIVERGENCE_STEP
-    if ch == "[":
-        return -DIVERGENCE_STEP
-    return None
-
-
 CLICK_THROUGH_TOGGLE_KEY = "C"
 
-# Global hotkeys (Windows RegisterHotKey): plain [ / ] work while the viewer is running,
-# whichever window has focus. They are taken away from other apps for that time.
+FPS_TOGGLE_KEY = "F"
+FPS_OSD_INTERVAL_MS = 1000
+
+# Global hotkeys (Windows RegisterHotKey): [ / ] with optional Ctrl or Alt work while the viewer
+# is running, whichever window has focus. They are taken away from other apps for that time.
 HOTKEY_DIVERGENCE_DOWN = 1
 HOTKEY_DIVERGENCE_UP = 2
+HOTKEY_CONVERGENCE_DOWN = 3
+HOTKEY_CONVERGENCE_UP = 4
+HOTKEY_FOREGROUND_DOWN = 5
+HOTKEY_FOREGROUND_UP = 6
 VK_OEM_4 = 0xDB  # "[" on a US layout
 VK_OEM_6 = 0xDD  # "]" on a US layout
+# id -> (modifiers, virtual key, parameter name, direction)
 GLOBAL_HOTKEYS = {
-    HOTKEY_DIVERGENCE_DOWN: (0, VK_OEM_4),  # (modifiers, virtual key)
-    HOTKEY_DIVERGENCE_UP: (0, VK_OEM_6),
+    HOTKEY_DIVERGENCE_DOWN: (0, VK_OEM_4, "divergence", -1),
+    HOTKEY_DIVERGENCE_UP: (0, VK_OEM_6, "divergence", +1),
+    HOTKEY_CONVERGENCE_DOWN: (wx.MOD_ALT, VK_OEM_4, "convergence", -1),
+    HOTKEY_CONVERGENCE_UP: (wx.MOD_ALT, VK_OEM_6, "convergence", +1),
+    HOTKEY_FOREGROUND_DOWN: (wx.MOD_CONTROL, VK_OEM_4, "foreground_scale", -1),
+    HOTKEY_FOREGROUND_UP: (wx.MOD_CONTROL, VK_OEM_6, "foreground_scale", +1),
 }
 
 
-def divergence_delta_for_hotkey(hotkey_id):
-    if hotkey_id == HOTKEY_DIVERGENCE_UP:
-        return DIVERGENCE_STEP
-    if hotkey_id == HOTKEY_DIVERGENCE_DOWN:
-        return -DIVERGENCE_STEP
-    return None
+def hotkey_action(hotkey_id):
+    """Global hotkey id -> (parameter name, direction) or None."""
+    entry = GLOBAL_HOTKEYS.get(hotkey_id)
+    if entry is None:
+        return None
+    return (entry[2], entry[3])
+
+
+def key_action(ch, ctrl, alt):
+    """Typed character + modifiers (viewer focused) -> (parameter name, direction) or None.
+    [ / ] = divergence, Ctrl+[ / ] = foreground scale, Alt+[ / ] = convergence."""
+    if ch == "]":
+        direction = +1
+    elif ch == "[":
+        direction = -1
+    else:
+        return None
+    if ctrl and alt:
+        return None
+    if ctrl:
+        return ("foreground_scale", direction)
+    if alt:
+        return ("convergence", direction)
+    return ("divergence", direction)
+
+
+def format_fps_line(estimated, screenshot, streaming):
+    def f(v):
+        return "-" if v is None else f"{v:.0f}"
+
+    return f"FPS {f(estimated)} | capture {f(screenshot)} | render {f(streaming)}"
 
 
 class LocalViewerWindow(wx.Frame):
@@ -660,7 +702,8 @@ class LocalViewerWindow(wx.Frame):
         device_id=0,
         uncap_fps=False,
         polling_interval=POLLING_INTERVAL,
-        on_adjust_divergence=None,
+        on_adjust=None,
+        fps_provider=None,
         mouse_forwarder=None,
         stereo_layout="sbs",
     ):
@@ -680,20 +723,25 @@ class LocalViewerWindow(wx.Frame):
             mouse_forwarder=mouse_forwarder,
             stereo_layout=stereo_layout,
         )
-        # callable(delta) -> new divergence value, or None when adjustment is not supported
-        self.on_adjust_divergence = on_adjust_divergence
+        # callable(param_name, delta) -> new value, or None when adjustment is not supported
+        self.on_adjust = on_adjust
+        # callable() -> {"estimated": fps, "screenshot": fps, "streaming": fps} (values may be None)
+        self.fps_provider = fps_provider
+        self.fps_osd_on = False
+        self.fps_timer = wx.Timer(self)
+        self.Bind(wx.EVT_TIMER, self.on_fps_timer, self.fps_timer)
         self.status = {}  # title segments, e.g. {"3D Strength": "1.2", "Click-through": "OFF"}
 
         self.Bind(wx.EVT_CLOSE, self.on_close)
         self.Bind(wx.EVT_CHAR_HOOK, self.on_char)
         self.registered_hotkeys = []
-        if self.on_adjust_divergence is not None:
+        if self.on_adjust is not None:
             self.register_global_hotkeys()
 
     def register_global_hotkeys(self):
         if sys.platform != "win32":
             return
-        for hotkey_id, (modifiers, vk) in GLOBAL_HOTKEYS.items():
+        for hotkey_id, (modifiers, vk, _name, _direction) in GLOBAL_HOTKEYS.items():
             if self.RegisterHotKey(hotkey_id, modifiers, vk):
                 self.registered_hotkeys.append(hotkey_id)
             else:
@@ -711,8 +759,8 @@ class LocalViewerWindow(wx.Frame):
         self.registered_hotkeys = []
 
     def on_hotkey(self, evt):
-        delta = divergence_delta_for_hotkey(evt.GetId())
-        if delta is None or not self.adjust_divergence(delta):
+        action = hotkey_action(evt.GetId())
+        if action is None or not self.adjust_param(*action):
             evt.Skip()
 
     def set_status(self, key, value):
@@ -722,6 +770,27 @@ class LocalViewerWindow(wx.Frame):
         if not self.canvas.closed:
             self.canvas.show_osd(f"{key} {value}")
 
+    def toggle_fps_osd(self):
+        if self.fps_provider is None:
+            return False
+        self.fps_osd_on = not self.fps_osd_on
+        if self.fps_osd_on:
+            self.on_fps_timer(None)
+            self.fps_timer.Start(FPS_OSD_INTERVAL_MS)
+        else:
+            self.fps_timer.Stop()
+            if not self.canvas.closed:
+                self.canvas.hide_osd()
+        return True
+
+    def on_fps_timer(self, evt):
+        if not self.fps_osd_on or self.canvas.closed:
+            return
+        if self.canvas.osd_temporary_active():
+            return  # let a status message ([ / ] etc.) show for its 3 seconds first
+        s = self.fps_provider()
+        self.canvas.show_osd(format_fps_line(s.get("estimated"), s.get("screenshot"), s.get("streaming")), sticky=True)
+
     def toggle_fullscreen(self):
         is_full = self.IsFullScreen()
         self.ShowFullScreen(not is_full, style=wx.FULLSCREEN_ALL)
@@ -729,12 +798,13 @@ class LocalViewerWindow(wx.Frame):
     def escape_fullscreen(self):
         self.ShowFullScreen(False, style=wx.FULLSCREEN_ALL)
 
-    def adjust_divergence(self, delta):
-        if self.on_adjust_divergence is None:
+    def adjust_param(self, name, direction):
+        if self.on_adjust is None:
             return False
-        value = self.on_adjust_divergence(delta)
+        spec = ADJUSTABLE_PARAMS[name]
+        value = self.on_adjust(name, direction * spec.step)
         if value is not None:
-            self.set_status("3D Strength", f"{value:.1f}")
+            self.set_status(spec.label, format_param_value(name, value))
         return True
 
     def toggle_click_through(self):
@@ -748,14 +818,16 @@ class LocalViewerWindow(wx.Frame):
         code = evt.GetKeyCode()
         unicode_key = evt.GetUnicodeKey()
         ch = chr(unicode_key) if unicode_key else ""
-        delta = divergence_delta_for_key(ch)
+        action = key_action(ch, ctrl=evt.ControlDown(), alt=evt.AltDown())
         if code == wx.WXK_ESCAPE and self.IsFullScreen():
             self.toggle_fullscreen()
         elif code == wx.WXK_F11:
             self.toggle_fullscreen()
-        elif delta is not None and self.adjust_divergence(delta):
+        elif action is not None and self.adjust_param(*action):
             pass
         elif ch.upper() == CLICK_THROUGH_TOGGLE_KEY and self.toggle_click_through():
+            pass
+        elif ch.upper() == FPS_TOGGLE_KEY and self.toggle_fps_osd():
             pass
         else:
             evt.Skip()
@@ -768,6 +840,7 @@ class LocalViewerWindow(wx.Frame):
         return self.canvas.get_fps()
 
     def on_close(self, evt):
+        self.fps_timer.Stop()
         self.unregister_global_hotkeys()
         self.canvas.destroy()
         evt.Skip()
@@ -786,7 +859,8 @@ class LocalViewer:
         device_id=0,
         uncap_fps=False,
         polling_interval=POLLING_INTERVAL,
-        on_adjust_divergence=None,
+        on_adjust=None,
+        fps_provider=None,
         mouse_forwarder=None,
         stereo_layout="sbs",
         **_unsupported_kwargs,
@@ -802,7 +876,8 @@ class LocalViewer:
         self.device_id = device_id
         self.uncap_fps = uncap_fps
         self.polling_interval = polling_interval
-        self.on_adjust_divergence = on_adjust_divergence
+        self.on_adjust = on_adjust
+        self.fps_provider = fps_provider
         self.mouse_forwarder = mouse_forwarder
         self.stereo_layout = stereo_layout
 
@@ -824,7 +899,8 @@ class LocalViewer:
                     device_id=self.device_id,
                     uncap_fps=self.uncap_fps,
                     polling_interval=self.polling_interval,
-                    on_adjust_divergence=self.on_adjust_divergence,
+                    on_adjust=self.on_adjust,
+                    fps_provider=self.fps_provider,
                     mouse_forwarder=self.mouse_forwarder,
                     stereo_layout=self.stereo_layout,
                 )

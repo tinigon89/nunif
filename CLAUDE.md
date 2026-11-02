@@ -58,11 +58,11 @@ windows_package\python\python.exe -m pip install --no-cache-dir --upgrade -r req
 
 ## Tính năng riêng trên dev-jk (iw3/desktop)
 
-- `[` / `]` đổi 3D Strength 0.1 mỗi lần. Khi viewer đang chạy, hai phím này là **global hotkey** (RegisterHotKey), nhận ở mọi cửa sổ và bị lấy khỏi app khác cho tới khi đóng viewer. Mã phím theo layout US (VK_OEM_4 / VK_OEM_6).
+- Hotkey chỉnh thông số, bước nhảy và dải trong `iw3/desktop/params.py`: `[` / `]` 3D Strength ±0.1; `Ctrl+[` / `Ctrl+]` Foreground Scale ±0.5 (cập nhật luôn `args.mapper`); `Alt+[` / `Alt+]` Convergence ±0.1. Cả sáu là **global hotkey** (RegisterHotKey) khi viewer đang chạy, nhận ở mọi cửa sổ và bị lấy khỏi app khác tới khi đóng viewer. Mã phím theo layout US (VK_OEM_4 / VK_OEM_6). GUI đồng bộ ô tương ứng qua `args.state["on_param_changed"](name, value)`.
+- `F` (viewer có focus) bật tắt OSD cố định `FPS 57 | capture 60 | render 57` = Estimated / Screenshot / Streaming FPS, cập nhật mỗi giây; OSD tạm 3 giây của phím khác được ưu tiên hiện trước rồi dòng FPS quay lại.
 - `C` bật tắt click-through, chỉ khi viewer có focus. Click trái, click phải, lăn chuột trong viewer được chuyển sang monitor đang capture qua SendInput (`iw3/desktop/click_through.py`). Gửi nhấn và nhả cùng lúc lúc nhả chuột, trả con trỏ và focus về viewer sau mỗi click. Tắt khi capture theo Window Name.
 - OSD: `set_status` của cửa sổ viewer vẽ chữ đè lên khung hình 3 giây, mỗi mắt một lần (SBS hai nửa, TB trên dưới, anaglyph một lần). Viewer tự vẽ lại khung cuối khi OSD xuất hiện hoặc hết hạn.
 - Capture tự mở lại: cả wc_cuda và wc_mp lặp lại khi phiên capture tự kết thúc (cắm thêm màn hình làm Windows Graphics Capture đóng phiên). Trước đây lỗi `RuntimeError: thread is dead`.
-- Khi đổi divergence từ viewer, GUI đồng bộ ô 3D Strength qua `args.state["on_divergence_changed"]`.
 
 ## Hiệu năng đã đo trên máy này (RTX 4090, màn 4K 120 Hz)
 

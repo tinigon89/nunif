@@ -1153,18 +1153,24 @@ class MainFrame(wx.Frame):
             stop_event=self.stop_event,
             depth_model=self.depth_model,
         )
-        # Local Viewer `[` / `]` keys change divergence while running; keep the GUI controls in sync
-        args.state["on_divergence_changed"] = self.on_divergence_changed
+        # Local Viewer hotkeys change parameters while running; keep the GUI controls in sync
+        args.state["on_param_changed"] = self.on_param_changed
         return args
 
-    def on_divergence_changed(self, value):
-        wx.CallAfter(self.sync_divergence_controls, value)
+    def on_param_changed(self, name, value):
+        wx.CallAfter(self.sync_param_controls, name, value)
 
-    def sync_divergence_controls(self, value):
+    def sync_param_controls(self, name, value):
         if self.args is None:
             return
-        self.sld_adj_divergence.SetValue(value)
-        self.cbo_divergence.SetValue(str(value))
+        controls = {
+            "divergence": (self.sld_adj_divergence, self.cbo_divergence),
+            "convergence": (self.sld_adj_convergence, self.cbo_convergence),
+            "foreground_scale": (self.sld_adj_foreground_scale, self.cbo_foreground_scale),
+        }
+        spin, combo = controls[name]
+        spin.SetValue(value)
+        combo.SetValue(str(value))
 
     def on_fps(self, event):
         estimated_fps, screenshot_fps, streaming_fps, screen_size, url = event.GetValue()

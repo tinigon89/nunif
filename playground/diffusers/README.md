@@ -146,3 +146,95 @@ AI : こんにちは！そうですね、私は人間ではありません。私
 何か私に聞いてみたいこと、話したいことはありますか？ どんなことでも、できる限りお手伝いしますよ！
 You >
 ```
+
+
+## Clef-Flash Image Finder
+
+Uses: https://huggingface.co/Cloudflare/clef-flash
+
+Finds images using the multimodal decision model Clef-Flash based on a given prompt/question. Only images matching the criteria are saved to the output directory.
+
+```bash
+python -m playground.diffusers.clef_find -p "Is there a dog in the picture?" -i ./input -o ./output
+```
+
+Options:
+- `-p`, `--prompt`: Question or prompt condition (e.g., `"Is there a dog in the picture?"`).
+- `-i`, `--input`: Input directory or single image file.
+- `-o`, `--output`: Output directory for matched images.
+- `--q8`: Use 8-bit quantization instead of default 4-bit (4-bit requires ~6.5GB VRAM, 8-bit requires ~9.5GB VRAM).
+- `--device`: Target device (`cuda` or `cpu`). Use `--device cpu` to run entirely on system RAM without GPU.
+- `--threshold`: Probability threshold for matching (default: `0.5`).
+- `--max-size`: Max image size (longest edge) for model input. Larger images are downscaled while preserving aspect ratio. `0` disables resizing (default: `512`).
+- `--action`: Action on matched images: `copy` (default) or `symlink`.
+- `--recursive`, `-r`: Search recursively in subdirectories.
+- `-q`, `--quiet`: Suppress per-file logging.
+
+
+## Qwen3.5 9B Abliterated Chat / Vision
+
+Uses: https://huggingface.co/huihui-ai/Huihui-Qwen3.5-9B-abliterated
+
+A conversational and vision-language pipeline using the abliterated Qwen3.5-9B model with 4-bit / 8-bit `bitsandbytes` quantization.
+
+Requires:
+- 4-bit (default): ~7-8 GB VRAM
+- `--q8`: ~12 GB VRAM
+
+### Interactive Chat
+
+```bash
+python -m playground.diffusers.qwen35_chat
+```
+
+You can pass image files directly in the chat prompt using the `@<path>` syntax:
+```text
+You > What is this? @path/to/image.png
+You > Compare these two images @img1.png @img2.png
+```
+
+Commands during chat:
+- `/reset` or `/clear`: Reset conversation history.
+- `/q` or `quit`: Exit the chat.
+
+### Non-Interactive (Single prompt)
+
+```bash
+# Text only
+python -m playground.diffusers.qwen35_chat -p "What is the capital of Japan?"
+
+# With image input via -i / --image
+python -m playground.diffusers.qwen35_chat -i path/to/image.png -p "Describe this image."
+```
+
+### Options
+
+- `-p`, `--prompt`: Single prompt to execute and exit.
+- `-i`, `--image`: Input image file(s) for initial prompt or single execution.
+- `--q8`: Load model with 8-bit quantization instead of default 4-bit.
+- `--thinking`: Enable thinking mode (chain-of-thought).
+- `--system-prompt`: Set a custom system prompt.
+- `--max-new-tokens`: Maximum new tokens to generate (default: `4096`).
+- `--temperature`: Sampling temperature (default: `0.7`).
+- `--top-p`: Top-p sampling parameter (default: `0.9`).
+
+### Python API
+
+The `Qwen35Chat` class can also be imported and used directly in other scripts:
+
+```python
+from playground.diffusers.qwen35_chat import Qwen35Chat
+
+chat = Qwen35Chat(q8=False, thinking=False)
+
+# Non-interactive generation (returns string)
+response = chat.generate("Hello!")
+print(response)
+
+# With image
+response = chat.generate("Describe this image.", images="path/to/image.png")
+
+# Reset context
+chat.reset()
+```
+

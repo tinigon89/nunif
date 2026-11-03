@@ -7,17 +7,18 @@
 - **Linux / POSIX**:
   - Virtual environments (`venv`) are assumed. Use `.venv` at the project root if it exists (e.g., `.venv/bin/python`).
 - **Windows (Distribution Package)**:
-  - Users typically run within the standalone distribution environment under `windows_package/`, which contains bundled embedded Python and isolates environment variables via `setenv.bat`.
-  - To run non-interactive commands (such as `python -c "..."` or scripts), use `nunif-cmd.bat <command>`.
-  - Do NOT call `nunif-prompt.bat`, as it starts an interactive `cmd` shell and will block execution.
+  - When working within or maintaining the standalone Windows distribution package (under `windows_package/` or the extracted `nunif-windows` package), follow [`windows_package/AGENTS.md`](./windows_package/AGENTS.md) for environment setup, command execution (`.\nunif-cmd.bat`), testing, and update architecture.
 - **Development Dependencies**:
-  - Development tools listed in `requirements-dev.txt` (such as `mypy`, `ruff`, and type stubs) are not installed by default in user environments on either Windows or Linux.
-  - If tools like `mypy` or `ruff` are required but not installed, install them using `python -m pip install -r requirements-dev.txt` (or install the specific package needed). On Windows distribution packages, execute this via `nunif-cmd.bat python -m pip install ...` (prefer `python -m pip` over `pip`).
+  - Development tools listed in `requirements-dev.txt` (such as `mypy`, `ruff`, `pytest`, and type stubs) are not installed by default in user environments on either Windows or Linux.
+  - If tools like `mypy` or `ruff` are required but not installed, install them using `python -m pip install -r requirements-dev.txt` (or install specific packages). For Windows distribution packages, follow [`windows_package/AGENTS.md`](./windows_package/AGENTS.md) to avoid dependency conflicts.
 - **Module Execution**:
   - Always run CLI and GUI tools as modules from the project root (e.g., `python -m iw3.cli`, `python -m iw3.gui`, `python -m waifu2x.cli`). Do NOT invoke scripts directly by file path (e.g., `python iw3/cli.py`), which causes relative import errors.
 
 ## Forbidden Actions / Directory Restrictions
 
+- **Never access, search, or scan outside the project directory**:
+  - All operations (reading, editing, file searching with `find`/`grep`, etc.) must be strictly confined within the project root.
+  - Never inspect or traverse outside the project directory, including parent directories (`..`), the user home directory (`~`, `$HOME`), `/tmp`, or other projects.
 - **Never list, find, or recursively scan restricted directories**:
   - Do NOT run directory listing (`ls`, `dir`), recursive search (`find`, glob, `grep -r`), or tree exploration on `tmp/`, `data/`, `models/`, or any pretrained model directories (e.g., `*pretrained_models/`).
   - **Reason**: These directories may contain private filenames or massive image datasets (over 10 million files), leading to context overflows, performance degradation, and privacy leaks.

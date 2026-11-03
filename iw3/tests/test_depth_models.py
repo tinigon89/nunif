@@ -2,7 +2,9 @@ import argparse
 import os
 import sys
 from os import path
+from pathlib import Path
 
+import pytest
 import torch
 from PIL import Image
 
@@ -11,7 +13,7 @@ from iw3.depth_model_factory import create_depth_model, get_all_depth_models
 from iw3.mapper import get_mapper, resolve_mapper_name
 
 DEFAULT_TEST_IMAGE = "tests/images/dog_448.png"
-DEFAULT_OUTPUT_DIR = "tests/data/test_depth_models"
+DEFAULT_OUTPUT_DIR = "tmp/test_depth_models"
 
 ALL_MODEL_TYPES = get_all_depth_models()
 
@@ -28,7 +30,7 @@ def run_model(
     model = create_depth_model(model_type)
 
     if not model.has_checkpoint_file(model_type):
-        return f"[SKIP] Checkpoint file for `{model_type}` is not found locally."
+        return f"[SKIP] Checkpoint for `{model_type}` is not found locally (checkpoint download required)."
 
     model.load(gpu=gpu)
 
@@ -49,6 +51,17 @@ def run_model(
     BaseDepthModel.save_normalized_depth(depth, output_filename)
 
     return f"[OK] `{model_type}` (mapper={mapper_name}) -> {output_filename} (shape={tuple(depth.shape)})"
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("model_type", ALL_MODEL_TYPES)
+def test_depth_model_infer(model_type: str, tmp_path: Path) -> None:
+    gpu = 0 if torch.cuda.is_available() else -1
+    msg = run_model(model_type, DEFAULT_TEST_IMAGE, str(tmp_path), gpu=gpu)
+    print(msg)
+    if msg.startswith("[SKIP]"):
+        pytest.skip(msg)
+    assert msg.startswith("[OK]"), msg
 
 
 def main() -> None:

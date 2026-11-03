@@ -4,7 +4,7 @@ from typing import List, Tuple
 
 import av
 
-from ..metadata import HW_PIX_FORMATS, VideoMetadata
+from ..metadata import VideoMetadata
 
 
 class AVFilterGraph:
@@ -34,17 +34,7 @@ class AVFilterGraph:
         )
 
     def update(self, frame: av.VideoFrame) -> av.VideoFrame | None:
-        if frame.format.name in HW_PIX_FORMATS:
-            # hwdownload
-            frame = frame.reformat(
-                format=self.pix_fmt,
-                src_colorspace=self.sw_format.colorspace,
-                src_color_range=self.sw_format.color_range,
-                dst_colorspace=self.sw_format.colorspace,
-                dst_color_primaries=self.sw_format.color_primaries,
-                dst_color_trc=self.sw_format.color_trc,
-                dst_color_range=self.sw_format.color_range,
-            )
+        assert frame.sw_format is None
         self.graph.push(frame)
         try:
             out_frame = self.graph.pull()

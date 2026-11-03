@@ -45,14 +45,16 @@ windows_package\python\python.exe -m pip install --no-cache-dir --upgrade -r req
 ## Hub cache của torch
 
 - Các repo code model (`nagadomi_Depth-Anything_iw3_main`, `..._Depth-Anything-3_iw3_main`, `..._Video-Depth-Anything_iw3_main`...) được torch.hub cache trong `iw3\pretrained_models\hub`. torch.hub **không tự cập nhật** cache này.
-- Khi upstream đổi hub repo (ví dụ thêm Ultimate DAV2) sẽ gặp lỗi kiểu `Cannot find callable UltimateDAV2 in hubconf`. Cách sửa chuẩn: chạy `windows_package\python\python.exe -m iw3.download_models` (đồng bộ tất cả hub repo, bỏ qua checkpoint đã có). Xóa thư mục cache rồi để torch.hub tải lại cũng được. Kiểm tra nhanh bằng cách so `hubconf.py` trong cache với bản raw trên GitHub.
+- Khi upstream đổi hub repo (ví dụ thêm Ultimate DAV2) sẽ gặp lỗi kiểu `Cannot find callable UltimateDAV2 in hubconf`. Cách sửa chuẩn: chạy `windows_package\python\python.exe -m iw3.update_hub` (lệnh mới từ 2026-10-16, chỉ làm mới cache hub; `update.bat` của upstream cũng gọi nó và không tải sẵn model nữa). Xóa thư mục cache rồi để torch.hub tải lại cũng được. Kiểm tra nhanh bằng cách so `hubconf.py` trong cache với bản raw trên GitHub.
 - Ultimate DAV2 (cc-by-nc) đã tải ngày 2026-10-12 vào `checkpoints` với tên `ultimate_dav2_vits_INet_UL`, `ultimate_dav2_vits_INet_quality`, `ultimate_dav2_vitB_INet_quality` (.safetensors). Đo được UL 7.3 ms, S 8.0 ms, B 8.8 ms, pipeline 50 đến 56 fps, ngang Any_V2_S.
 
 ## Kiểm thử và lint
 
-- Unit test desktop (unittest, không cần pytest):
-  `windows_package\python\python.exe -m unittest tests.test_desktop_osd tests.test_desktop_click_through tests.test_desktop_viewer_keys tests.test_desktop_adjust_divergence tests.test_desktop_screenshot_restart tests.test_desktop_global_hotkeys`
+- Upstream dùng pytest, test nằm trong từng package (`pytest.ini`, `tests/README.md`). Test desktop của fork ở `iw3/tests/test_desktop_*.py`. pytest đã cài trong Python đóng gói:
+  `windows_package\python\python.exe -m pytest iw3/tests -k desktop -q`
+  (chạy cả bộ iw3: `-m pytest iw3/tests -m "not slow"`; các test smoke cần video mẫu và lâu).
 - Lint: `windows_package\python\python.exe -m ruff check --fix <file>` rồi `ruff format <file>`. ruff đã cài trong Python đóng gói. `.flake8` cũ không còn là chuẩn.
+- Đồng bộ upstream gần nhất: 2026-11-03 (upstream dev c57c9892), không xung đột.
 - E2E Local Viewer: chạy `python -u -m iw3.desktop --local-viewer --screenshot wc_cuda ...` rồi đọc dòng `Estimated FPS` (phân cách bằng `\r`). Bơm sự kiện giả qua `wx.CallAfter` thay vì gửi phím chuột thật để không bấm nhầm vào desktop.
 - Có thể chụp framebuffer của viewer bằng `glReadPixels` sau `SetCurrent` để kiểm tra OSD bằng mắt.
 
